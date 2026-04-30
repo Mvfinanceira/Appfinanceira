@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="pt-BR" class="h-full">
-<head>
+<head>    
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>MV Financeira - Sistema de Empréstimos</title>
@@ -48,7 +48,7 @@
     .card { background: rgba(26, 39, 68, 0.6); backdrop-filter: blur(12px); border: 1px solid rgba(212, 160, 23, 0.15); border-radius: 16px; }
     .card-hover { transition: all 0.3s ease; cursor: pointer; }
     .card-hover:hover { transform: translateY(-2px); box-shadow: 0 8px 32px rgba(212, 160, 23, 0.1); border-color: rgba(212, 160, 23, 0.3); }
-    .btn-gold { background: linear-gradient(135deg, #d4a017, #b8860b); color: #080b14; font-weight: 600; border-radius: 12px; transition: all 0.3s; border: none; cursor: pointer; }
+    .btn-gold { background: linear-gradient(135deg, #d4a017, #b8860b); color: #080b14; font-weight: 600; border-radius: 12px; transition: all 0.3s; border: none; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
     .btn-gold:hover { background: linear-gradient(135deg, #ffcc1a, #d4a017); transform: translateY(-1px); box-shadow: 0 4px 16px rgba(212, 160, 23, 0.3); }
     .btn-outline { border: 1px solid rgba(212, 160, 23, 0.4); color: #d4a017; border-radius: 12px; transition: all 0.3s; background: transparent; cursor: pointer; }
     .btn-outline:hover { background: rgba(212, 160, 23, 0.1); border-color: #d4a017; }
@@ -68,8 +68,8 @@
     .tab-btn.active { background: linear-gradient(135deg, #d4a017, #b8860b); color: #080b14; }
     .tab-btn:not(.active) { color: #94a3b8; background: transparent; }
     .tab-btn:not(.active):hover { color: #d4a017; background: rgba(212, 160, 23, 0.1); }
-    .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(100px); background: rgba(26, 39, 68, 0.95); border: 1px solid rgba(212, 160, 23, 0.3); border-radius: 12px; padding: 12px 20px; color: #e2e8f0; font-size: 0.875rem; z-index: 9999; transition: transform 0.4s ease; backdrop-filter: blur(12px); }
-    .toast.show { transform: translateX(-50%) translateY(0); }
+    .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(120px); opacity: 0; pointer-events: none; background: rgba(26, 39, 68, 0.95); border: 1px solid rgba(212, 160, 23, 0.3); border-radius: 12px; padding: 12px 20px; color: #e2e8f0; font-size: 0.875rem; z-index: 9999; transition: transform 0.35s ease, opacity 0.35s ease; backdrop-filter: blur(12px); }
+    .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; pointer-events: auto; }
     .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 100; display: flex; align-items: center; justify-content: center; padding: 16px; }
     .modal-content { background: linear-gradient(135deg, #162038, #1a2744); border: 1px solid rgba(212, 160, 23, 0.2); border-radius: 16px; max-width: 560px; width: 100%; max-height: 88%; overflow-y: auto; padding: 24px; }
     .stat-card { background: linear-gradient(135deg, rgba(26,39,68,0.8), rgba(22,32,56,0.8)); border: 1px solid rgba(212,160,23,0.12); border-radius: 14px; padding: 16px; }
@@ -93,13 +93,17 @@
     let currentScreen = 'home';
     let adminLoggedIn = false;
     let clientLoggedIn = null;
+    let investorLoggedIn = null;
     let adminTab = 'clients';
     let editingClient = null;
     let editingLoan = null;
     let viewingClient = null;
     let viewingLoan = null;
+    let editingInvestor = null;
+    let viewingInvestor = null;
     let confirmAction = null;
     let activeModal = null;
+    let expandedLoanFolders = {};
 
     const STORAGE_KEY = 'mv_financeira_local_v1';
 
@@ -108,13 +112,19 @@
       loans: [],
       installments: [],
       payments: [],
+      investors: [],
+      investor_aportes: [],
+      investor_payments: [],
       configs: {
         business_name: 'MV Financeira',
         pix_key: '',
-        default_rate_daily: '0.33',
-        default_rate_weekly: '2.50',
-        default_rate_biweekly: '5.00',
-        default_rate_monthly: '10.00',
+        level1_daily_rate: '0.50',
+        level2_daily_rate: '0.35',
+        level3_daily_rate: '0.20',
+        default_rate_daily: '0.50',
+        default_rate_weekly: '3.50',
+        default_rate_biweekly: '7.50',
+        default_rate_monthly: '15.00',
         admin_password: '@1997#'
       }
     };
@@ -130,18 +140,23 @@
         if (!configs.default_rate_daily && configs.default_rate) {
           configs.default_rate_daily = String(configs.default_rate);
         }
-        if (!configs.default_rate_weekly) configs.default_rate_weekly = '2.50';
-        if (!configs.default_rate_biweekly) configs.default_rate_biweekly = '5.00';
-        if (!configs.default_rate_monthly) configs.default_rate_monthly = '10.00';
+        if (!configs.level1_daily_rate) configs.level1_daily_rate = '0.50';
+        if (!configs.level2_daily_rate) configs.level2_daily_rate = '0.35';
+        if (!configs.level3_daily_rate) configs.level3_daily_rate = '0.20';
+        if (!configs.default_rate_weekly) configs.default_rate_weekly = '3.50';
+        if (!configs.default_rate_biweekly) configs.default_rate_biweekly = '7.50';
+        if (!configs.default_rate_monthly) configs.default_rate_monthly = '15.00';
 
         const clients = (parsed.clients || []).map(client => {
           const baseDaily = Number(client.rate_daily ?? client.daily_rate ?? configs.default_rate_daily ?? 0.33);
           return {
             ...client,
+            level: String(client.level || '1'),
+            custom_daily_rate: Number(client.custom_daily_rate ?? client.rate_daily ?? client.daily_rate ?? baseDaily),
             rate_daily: Number(client.rate_daily ?? client.daily_rate ?? baseDaily),
-            rate_weekly: Number(client.rate_weekly ?? configs.default_rate_weekly ?? 2.5),
-            rate_biweekly: Number(client.rate_biweekly ?? configs.default_rate_biweekly ?? 5),
-            rate_monthly: Number(client.rate_monthly ?? configs.default_rate_monthly ?? 10),
+            rate_weekly: Number(client.rate_weekly ?? configs.default_rate_weekly ?? 3.5),
+            rate_biweekly: Number(client.rate_biweekly ?? configs.default_rate_biweekly ?? 7.5),
+            rate_monthly: Number(client.rate_monthly ?? configs.default_rate_monthly ?? 15),
             late_daily_rate: Number(client.late_daily_rate ?? client.rate_daily ?? client.daily_rate ?? baseDaily)
           };
         });
@@ -151,6 +166,9 @@
           loans: parsed.loans || [],
           installments: parsed.installments || [],
           payments: parsed.payments || [],
+          investors: parsed.investors || [],
+          investor_aportes: parsed.investor_aportes || [],
+          investor_payments: parsed.investor_payments || [],
           configs
         };
       } catch {
@@ -162,11 +180,32 @@
 
     function persistDB() {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
-      saveCloudDB();
+      scheduleCloudSave();
     }
 
     let cloudSaving = false;
+    let cloudSaveQueued = false;
+    let cloudSaveTimer = null;
     let cloudReady = false;
+
+    function cloneDBForCloud() {
+      return JSON.parse(JSON.stringify({
+        clients: db.clients || [],
+        loans: db.loans || [],
+        installments: db.installments || [],
+        payments: db.payments || [],
+        investors: db.investors || [],
+        investor_aportes: db.investor_aportes || [],
+        investor_payments: db.investor_payments || [],
+        configs: db.configs || {}
+      }));
+    }
+
+    function scheduleCloudSave() {
+      if (!window.mvCloud?.enabled) return;
+      clearTimeout(cloudSaveTimer);
+      cloudSaveTimer = setTimeout(() => saveCloudDB(), 180);
+    }
 
     async function loadCloudDB() {
       if (!window.mvCloud?.enabled) return;
@@ -179,6 +218,9 @@
             loans: cloud.loans || [],
             installments: cloud.installments || [],
             payments: cloud.payments || [],
+            investors: cloud.investors || [],
+            investor_aportes: cloud.investor_aportes || [],
+            investor_payments: cloud.investor_payments || [],
             configs: { ...defaultDB.configs, ...(cloud.configs || {}) }
           };
           localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
@@ -196,15 +238,14 @@
     }
 
     async function saveCloudDB() {
-      if (!window.mvCloud?.enabled || cloudSaving) return;
+      if (!window.mvCloud?.enabled) return;
+      if (cloudSaving) { cloudSaveQueued = true; return; }
       try {
         cloudSaving = true;
+        cloudSaveQueued = false;
+        const payload = cloneDBForCloud();
         await window.mvCloud.docRef.set({
-          clients: db.clients || [],
-          loans: db.loans || [],
-          installments: db.installments || [],
-          payments: db.payments || [],
-          configs: db.configs || {},
+          ...payload,
           updated_at: firebase.firestore.FieldValue.serverTimestamp()
         });
       } catch (error) {
@@ -212,6 +253,10 @@
         Utils.toast('Erro ao salvar online. Confira regras do Firestore.', 'error');
       } finally {
         cloudSaving = false;
+        if (cloudSaveQueued) {
+          cloudSaveQueued = false;
+          setTimeout(() => saveCloudDB(), 80);
+        }
       }
     }
 
@@ -223,10 +268,21 @@
       uid: () => Date.now().toString(36) + Math.random().toString(36).slice(2,7),
       toast: (msg, type='info') => {
         const t = document.getElementById('toast-container');
+        if (!t) return;
+        clearTimeout(window.mvToastTimer);
+        clearTimeout(window.mvToastCleanupTimer);
         t.textContent = msg;
-        t.className = 'toast show';
+        t.className = 'toast';
+        t.style.display = 'block';
         t.style.borderColor = type === 'error' ? 'rgba(239, 68, 68, 0.4)' : type === 'success' ? 'rgba(34, 197, 94, 0.4)' : 'rgba(212, 160, 23, 0.4)';
-        setTimeout(() => t.classList.remove('show'), 3000);
+        requestAnimationFrame(() => t.classList.add('show'));
+        window.mvToastTimer = setTimeout(() => {
+          t.classList.remove('show');
+          window.mvToastCleanupTimer = setTimeout(() => {
+            t.textContent = '';
+            t.style.display = 'none';
+          }, 420);
+        }, 2200);
       },
       validateEmail: (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email === '',
       validateCPF: (cpf) => cpf.replace(/\D/g, '').length >= 11,
@@ -235,6 +291,8 @@
         editingLoan = null;
         viewingClient = null;
         viewingLoan = null;
+        editingInvestor = null;
+        viewingInvestor = null;
         confirmAction = null;
         activeModal = null;
       }
@@ -247,6 +305,12 @@
       getLoans: () => db.loans,
       getInstallments: () => db.installments,
       getPayments: () => db.payments,
+      getInvestors: () => db.investors || [],
+      getInvestorById: (id) => (db.investors || []).find(inv => inv.id === id),
+      getAportesByInvestor: (investorId) => (db.investor_aportes || []).filter(a => a.investor_id === investorId).sort((a,b) => new Date(a.date) - new Date(b.date)),
+      getInvestorPayments: (investorId) => (db.investor_payments || []).filter(p => p.investor_id === investorId).sort((a,b) => new Date(b.date) - new Date(a.date)),
+      getInvestorPaymentById: (id) => (db.investor_payments || []).find(p => p.id === id),
+      getInvestorAporteById: (id) => (db.investor_aportes || []).find(a => a.id === id),
       getClientById: (id) => db.clients.find(c => c.id === id),
       getLoanById: (id) => db.loans.find(l => l.id === id),
       getLoanByKey: (loanKey) => db.loans.find(l => l.loan_id === loanKey),
@@ -265,116 +329,323 @@
       updateInstallment: (id, patch) => { const i = db.installments.findIndex(ins => ins.id === id); if (i >= 0) { db.installments[i] = { ...db.installments[i], ...patch }; persistDB(); } },
       deleteInstallment: (id) => { db.installments = db.installments.filter(i => i.id !== id); persistDB(); },
       addPayment: (data) => { db.payments.push(data); persistDB(); },
+      addLoanWithInstallments: (loanData, installmentList) => {
+        db.loans.push(loanData);
+        installmentList.forEach(item => db.installments.push(item));
+        persistDB();
+      },
       deletePayment: (id) => { db.payments = db.payments.filter(p => p.id !== id); persistDB(); },
+      addInvestor: (data) => { db.investors = db.investors || []; db.investors.push(data); persistDB(); },
+      updateInvestor: (id, patch) => { db.investors = db.investors || []; const i = db.investors.findIndex(inv => inv.id === id); if (i >= 0) { db.investors[i] = { ...db.investors[i], ...patch }; persistDB(); } },
+      deleteInvestor: (id) => { db.investors = (db.investors || []).filter(inv => inv.id !== id); db.investor_aportes = (db.investor_aportes || []).filter(a => a.investor_id !== id); db.investor_payments = (db.investor_payments || []).filter(p => p.investor_id !== id); persistDB(); },
+      addInvestorAporte: (data) => { db.investor_aportes = db.investor_aportes || []; db.investor_aportes.push(data); persistDB(); },
+      deleteInvestorAporte: (id) => { db.investor_aportes = (db.investor_aportes || []).filter(a => a.id !== id); persistDB(); },
+      addInvestorPayment: (data) => { db.investor_payments = db.investor_payments || []; db.investor_payments.push(data); persistDB(); },
+      deleteInvestorPayment: (id) => { db.investor_payments = (db.investor_payments || []).filter(p => p.id !== id); persistDB(); },
       resetAll: () => { db = JSON.parse(JSON.stringify(defaultDB)); persistDB(); }
     };
 
     const Finance = {
-      getPeriodRate: (client, frequency) => {
-        if (!client) {
-          const fallbackMap = {
-            diario: Number(DB.getConfig('default_rate_daily', '0.33')),
-            semanal: Number(DB.getConfig('default_rate_weekly', '2.50')),
-            quinzenal: Number(DB.getConfig('default_rate_biweekly', '5.00')),
-            mensal: Number(DB.getConfig('default_rate_monthly', '10.00'))
-          };
-          return Number(fallbackMap[frequency] || fallbackMap.mensal || 0);
-        }
-        const map = {
-          diario: Number(client.rate_daily ?? client.daily_rate ?? DB.getConfig('default_rate_daily', '0.33')),
-          semanal: Number(client.rate_weekly ?? DB.getConfig('default_rate_weekly', '2.50')),
-          quinzenal: Number(client.rate_biweekly ?? DB.getConfig('default_rate_biweekly', '5.00')),
-          mensal: Number(client.rate_monthly ?? DB.getConfig('default_rate_monthly', '10.00'))
-        };
-        return Number(map[frequency] || map.mensal || 0);
+      getLevelDailyRate: (client) => {
+        const level = String(client?.level || '1');
+        if (level === '1') return Number(DB.getConfig('level1_daily_rate', '0.50'));
+        if (level === '2') return Number(DB.getConfig('level2_daily_rate', '0.35'));
+        if (level === '3') return Number(DB.getConfig('level3_daily_rate', '0.20'));
+        return Number(client?.custom_daily_rate ?? client?.rate_daily ?? DB.getConfig('default_rate_daily', '0.50'));
       },
-      getLateDailyRate: (client) => Number(client?.late_daily_rate ?? client?.rate_daily ?? client?.daily_rate ?? DB.getConfig('default_rate_daily', '0.33')),
+      convertDailyRateToPeriod: (dailyRate, frequency) => {
+        const multiplier = { diario:1, semanal:7, quinzenal:15, mensal:30 }[frequency] || 30;
+        return Number(dailyRate || 0) * multiplier;
+      },
+      getPeriodRate: (client, frequency) => {
+        const daily = Finance.getLevelDailyRate(client);
+        return Finance.convertDailyRateToPeriod(daily, frequency);
+      },
+      getLateDailyRate: (client) => Finance.getLevelDailyRate(client),
+      daysBetweenDates: (startDate, endDate) => {
+        if (!startDate || !endDate) return 0;
+        return Math.max(0, Math.floor((new Date(endDate + 'T12:00:00') - new Date(startDate + 'T12:00:00')) / 86400000));
+      },
+      calcFutureInterest: (principal, dailyRate, startDate, endDate) => {
+        const days = Finance.daysBetweenDates(startDate, endDate);
+        return Math.max(0, Number(principal || 0) * (Number(dailyRate || 0) / 100) * days);
+      },
+      getPaidTotal: (inst, key) => {
+        const map = {
+          principal: ['total_paid_principal', 'paid_principal'],
+          periodInterest: ['total_paid_period_interest', 'paid_period_interest'],
+          extraInterest: ['total_paid_extra_interest', 'paid_extra_interest'],
+          penalty: ['total_paid_penalty', 'paid_penalty']
+        };
+        const [totalKey, currentKey] = map[key] || [];
+        return Number((totalKey && inst?.[totalKey] != null) ? inst[totalKey] : (currentKey ? inst?.[currentKey] : 0)) || 0;
+      },
+      getScheduledDueDate: (loan, installmentNumber, fallbackDate = '') => {
+        if (!loan?.first_due) return fallbackDate || Utils.today();
+        const freqDays = { diario:1, semanal:7, quinzenal:15, mensal:30 };
+        const days = freqDays[loan.frequency] || 30;
+        const d = new Date(loan.first_due + 'T12:00:00');
+        d.setDate(d.getDate() + (Number(installmentNumber || 1) - 1) * days);
+        return d.toISOString().split('T')[0];
+      },
+      getAutomaticNextDueDate: (loan, paymentDate) => {
+        const freqDays = { diario:1, semanal:7, quinzenal:15, mensal:30 };
+        const days = freqDays[loan?.frequency] || 30;
+        const d = new Date((paymentDate || Utils.today()) + 'T12:00:00');
+        d.setDate(d.getDate() + days);
+        return d.toISOString().split('T')[0];
+      },
+      isProportionalLoan: (loan) => String(loan?.calculation_mode || 'price') === 'proporcional',
+      round2: (v) => Math.round((Number(v) || 0) * 100) / 100,
+      rebuildInstallmentFromPayments: (inst, paymentsToReplay) => {
+        const loan = DB.getLoanByKey(inst.loan_id_inst);
+        const client = loan ? DB.getClientById(loan.client_id) : null;
+        const dailyRate = Number(loan?.daily_rate_used ?? Finance.getLateDailyRate(client));
+        const scheduledDue = Finance.getScheduledDueDate(loan, inst.number, inst.due_date);
+        const round2 = Finance.round2;
+        const isProportional = Finance.isProportionalLoan(loan);
+        const originalPrincipal = Number(inst.original_principal_before_recalc ?? (Number(inst.principal || 0) + Finance.getPaidTotal(inst, 'principal')));
+        const originalInterest = isProportional ? 0 : Number(inst.original_interest_before_recalc ?? (Number(inst.interest || 0) + Finance.getPaidTotal(inst, 'periodInterest')));
+        let state = {
+          ...inst,
+          principal: round2(originalPrincipal),
+          interest: round2(originalInterest),
+          installment_amount: round2(originalPrincipal + originalInterest),
+          paid_principal: 0,
+          paid_period_interest: 0,
+          paid_extra_interest: 0,
+          paid_penalty: 0,
+          total_paid_principal: 0,
+          total_paid_period_interest: 0,
+          total_paid_extra_interest: 0,
+          total_paid_penalty: 0,
+          due_date: scheduledDue,
+          last_payment_date: '',
+          interest_start_date: isProportional ? (loan?.date || inst.interest_start_date || scheduledDue) : (inst.interest_start_date || ''),
+          start_balance: round2(originalPrincipal),
+          end_balance: 0,
+          status_inst: 'pendente'
+        };
+
+        const ordered = [...(paymentsToReplay || [])].sort((a,b) => {
+          const da = String(a.payment_date || '');
+          const db = String(b.payment_date || '');
+          if (da !== db) return da.localeCompare(db);
+          return String(a.id || '').localeCompare(String(b.id || ''));
+        });
+
+        ordered.forEach(p => {
+          const paymentDate = p.payment_date || Utils.today();
+          const det = Finance.calcInstallmentDetails(state, paymentDate);
+          let remaining = Number(p.payment_amount || 0);
+          let paidToPeriodInterest = Math.min(det.periodInterestPending, remaining); remaining -= paidToPeriodInterest;
+          let paidToExtraInterest = Math.min(det.extraInterestPending, remaining); remaining -= paidToExtraInterest;
+          let paidToPenalty = Math.min(det.accumulatedPenalty, remaining); remaining -= paidToPenalty;
+          let paidToPrincipal = 0;
+          if (p.payment_type !== 'jurosMulta') {
+            paidToPrincipal = Math.min(det.principal, remaining);
+            remaining -= paidToPrincipal;
+          }
+
+          state.paid_period_interest = round2(Number(state.paid_period_interest || 0) + paidToPeriodInterest);
+          state.paid_extra_interest = round2(Number(state.paid_extra_interest || 0) + paidToExtraInterest);
+          state.paid_penalty = round2(Number(state.paid_penalty || 0) + paidToPenalty);
+          state.paid_principal = round2(Number(state.paid_principal || 0) + paidToPrincipal);
+          state.total_paid_period_interest = round2(Number(state.total_paid_period_interest || 0) + paidToPeriodInterest);
+          state.total_paid_extra_interest = round2(Number(state.total_paid_extra_interest || 0) + paidToExtraInterest);
+          state.total_paid_penalty = round2(Number(state.total_paid_penalty || 0) + paidToPenalty);
+          state.total_paid_principal = round2(Number(state.total_paid_principal || 0) + paidToPrincipal);
+          state.last_payment_date = paymentDate;
+
+          const remainingPrincipal = Math.max(0, det.principal - paidToPrincipal);
+          const detAfter = Finance.calcInstallmentDetails(state, paymentDate);
+          const fullyPaid = remainingPrincipal <= 0.009 && detAfter.totalInterestPending <= 0.009 && detAfter.accumulatedPenalty <= 0.009;
+
+          if (fullyPaid) {
+            state.status_inst = 'pago';
+          } else {
+            const previousCycleDue = state.due_date;
+            const paymentBeforeDue = new Date(paymentDate + 'T12:00:00') < new Date(previousCycleDue + 'T12:00:00');
+            const newDue = p.new_due_date || (paymentBeforeDue ? previousCycleDue : Finance.getAutomaticNextDueDate(loan, paymentDate));
+            state.original_principal_before_recalc = originalPrincipal;
+            state.original_interest_before_recalc = originalInterest;
+            state.principal = round2(remainingPrincipal);
+            if (isProportional) {
+              state.interest = 0;
+              state.installment_amount = round2(state.principal);
+              state.interest_start_date = paymentDate;
+            } else {
+              const interestStartDate = paymentBeforeDue ? previousCycleDue : paymentDate;
+              const futureInterest = Finance.calcFutureInterest(remainingPrincipal, dailyRate, interestStartDate, newDue);
+              state.interest = round2(futureInterest);
+              state.installment_amount = round2(state.principal + state.interest);
+            }
+            state.paid_principal = 0;
+            state.paid_period_interest = 0;
+            state.paid_extra_interest = 0;
+            state.paid_penalty = 0;
+            state.start_balance = state.principal;
+            state.end_balance = 0;
+            state.due_date = newDue;
+            state.last_payment_date = '';
+            state.status_inst = 'pendente';
+          }
+        });
+        return state;
+      },
       calcInstallmentAmount: (amount, periodRate, frequency, numInstallments) => {
         const freqDays = { diario:1, semanal:7, quinzenal:15, mensal:30 };
         const daysInPeriod = freqDays[frequency] || 30;
-        const basePrincipal = amount / numInstallments;
-        const periodInterest = basePrincipal * (Number(periodRate || 0) / 100);
-        const installmentAmount = basePrincipal + periodInterest;
-        return {
-          basePrincipal,
-          periodInterest,
-          installmentAmount,
-          daysInPeriod,
-          total: installmentAmount * numInstallments
-        };
+        const n = Math.max(1, Number(numInstallments || 1));
+        const principal = Number(amount || 0);
+        const i = Number(periodRate || 0) / 100;
+        let installmentAmount = 0;
+        if (i <= 0) {
+          installmentAmount = principal / n;
+        } else {
+          const factor = Math.pow(1 + i, n);
+          installmentAmount = principal * (i * factor) / (factor - 1);
+        }
+        const schedule = [];
+        let balance = principal;
+        for (let k = 1; k <= n; k++) {
+          const interest = i <= 0 ? 0 : balance * i;
+          let amortization = installmentAmount - interest;
+          if (k === n) amortization = balance;
+          const installment = k === n ? interest + amortization : installmentAmount;
+          const startBalance = balance;
+          balance = Math.max(0, balance - amortization);
+          schedule.push({ number: k, startBalance, interest, principal: amortization, installmentAmount: installment, endBalance: balance });
+        }
+        return { basePrincipal: principal / n, periodInterest: schedule[0]?.interest || 0, installmentAmount, daysInPeriod, total: schedule.reduce((sum, row) => sum + row.installmentAmount, 0), schedule };
       },
       generateInstallmentDates: (firstDue, frequency, count) => {
         const dates = [];
         const freqDays = { diario:1, semanal:7, quinzenal:15, mensal:30 };
         const days = freqDays[frequency] || 30;
         let d = new Date(firstDue + 'T12:00:00');
-        for (let i = 0; i < count; i++) {
-          dates.push(d.toISOString().split('T')[0]);
-          d = new Date(d.getTime() + days * 86400000);
-        }
+        for (let i = 0; i < count; i++) { dates.push(d.toISOString().split('T')[0]); d = new Date(d.getTime() + days * 86400000); }
         return dates;
+      },
+      ensureInstallmentsForLoan: (loan) => {
+        if (!loan?.loan_id) return;
+        const existing = DB.getInstallmentsByLoan(loan.loan_id);
+        if (existing.length > 0) return;
+        const amount = Number(loan.amount || 0);
+        const instCount = Number(loan.num_installments || 1);
+        const rate = Number(loan.rate_used || 0);
+        const freq = loan.frequency || 'mensal';
+        const firstDue = loan.first_due || loan.date || Utils.today();
+        const calc = Finance.calcInstallmentAmount(amount, rate, freq, instCount);
+        const dates = Finance.generateInstallmentDates(firstDue, freq, instCount);
+        const installmentList = [];
+        for (let i = 0; i < instCount; i++) {
+          const row = calc.schedule[i] || { installmentAmount: calc.installmentAmount, principal: calc.basePrincipal, interest: 0, startBalance: amount, endBalance: 0 };
+          installmentList.push({
+            id: Utils.uid(), type: 'installment', installment_id: Utils.uid(), loan_id_inst: loan.loan_id,
+            number: i + 1, due_date: dates[i], installment_amount: Math.round(row.installmentAmount * 100) / 100,
+            principal: Math.round(row.principal * 100) / 100, interest: Math.round(row.interest * 100) / 100,
+            start_balance: Math.round(row.startBalance * 100) / 100, end_balance: Math.round(row.endBalance * 100) / 100,
+            paid_principal: 0, paid_period_interest: 0, paid_extra_interest: 0, paid_penalty: 0,
+            last_payment_date: '', status_inst: 'pendente'
+          });
+        }
+        installmentList.forEach(item => db.installments.push(item));
+        persistDB();
       },
       calcInstallmentDetails: (inst, referenceDate = null) => {
         const loan = DB.getLoanByKey(inst.loan_id_inst);
         const client = loan ? DB.getClientById(loan.client_id) : null;
-        const lateDailyRate = Finance.getLateDailyRate(client);
+        const lateDailyRate = Number(loan?.daily_rate_used ?? loan?.late_daily_rate ?? Finance.getLateDailyRate(client));
         const penaltyRate = 1;
-
         const originalPrincipal = Number(inst.principal || 0);
-        const periodInterest = Number(inst.interest || 0);
         const paidPrincipal = Number(inst.paid_principal || 0);
-        const paidPeriodInterest = Number(inst.paid_period_interest || 0);
         const paidExtraInterest = Number(inst.paid_extra_interest || 0);
         const paidPenalty = Number(inst.paid_penalty || 0);
-
         const principalRemaining = Math.max(0, originalPrincipal - paidPrincipal);
-        const periodInterestPending = Math.max(0, periodInterest - paidPeriodInterest);
-
         const baseDate = referenceDate || Utils.today();
         const todayDate = new Date(baseDate + 'T12:00:00');
         const dueDate = new Date(inst.due_date + 'T12:00:00');
-        const lastPaymentDate = inst.last_payment_date ? new Date(inst.last_payment_date + 'T12:00:00') : null;
-        const interestStartDate = lastPaymentDate && lastPaymentDate > dueDate ? lastPaymentDate : dueDate;
 
-        if (todayDate < dueDate) {
-          const daysEarly = Math.floor((dueDate - todayDate) / 86400000);
-          const earlyDiscountOnPrincipal = (lateDailyRate / 100) * daysEarly * 0.5 * principalRemaining;
-          const totalDue = Math.max(0, principalRemaining + periodInterestPending - earlyDiscountOnPrincipal);
+        if (Finance.isProportionalLoan(loan)) {
+          const interestStart = inst.interest_start_date || inst.last_payment_date || loan?.date || inst.due_date || baseDate;
+          const daysRunning = Finance.daysBetweenDates(interestStart, baseDate);
+          const grossInterest = principalRemaining * (lateDailyRate / 100) * daysRunning;
+          const paidPeriodInterest = Number(inst.paid_period_interest || 0);
+          const periodInterestPending = Math.max(0, grossInterest - paidPeriodInterest);
+          const daysLate = todayDate > dueDate ? Math.floor((todayDate - dueDate) / 86400000) : 0;
+          const penaltyBrut = daysLate > 0 ? periodInterestPending * (penaltyRate / 100) * daysLate : 0;
+          const accumulatedPenalty = Math.max(0, penaltyBrut - paidPenalty);
+          const totalInterestPending = periodInterestPending;
+          const totalDue = Math.max(0, principalRemaining + totalInterestPending + accumulatedPenalty);
           return {
             principal: principalRemaining,
             periodInterestPending,
             extraInterestPending: 0,
             extraInterestDaysLate: 0,
-            accumulatedPenalty: 0,
-            totalInterestPending: periodInterestPending,
-            earlyDiscount: earlyDiscountOnPrincipal,
-            daysLate: 0,
+            accumulatedPenalty,
+            totalInterestPending,
+            earlyDiscount: 0,
+            daysLate,
+            daysRunning,
+            interestStartDate: interestStart,
             totalDue,
             balance: totalDue
           };
         }
 
+        const periodInterest = Number(inst.interest || 0);
+        const paidPeriodInterest = Number(inst.paid_period_interest || 0);
+        const periodInterestPending = Math.max(0, periodInterest - paidPeriodInterest);
+        const lastPaymentDate = inst.last_payment_date ? new Date(inst.last_payment_date + 'T12:00:00') : null;
+        const interestStartDate = lastPaymentDate && lastPaymentDate > dueDate ? lastPaymentDate : dueDate;
+        if (todayDate < dueDate) {
+          const totalDue = Math.max(0, principalRemaining + periodInterestPending);
+          return { principal: principalRemaining, periodInterestPending, extraInterestPending: 0, extraInterestDaysLate: 0, accumulatedPenalty: 0, totalInterestPending: periodInterestPending, earlyDiscount: 0, daysLate: 0, totalDue, balance: totalDue };
+        }
         let daysLate = 0;
         if (todayDate > interestStartDate) daysLate = Math.floor((todayDate - interestStartDate) / 86400000);
-
-        const extraInterestDaysLate = principalRemaining * ((lateDailyRate * 0.5) / 100) * daysLate;
+        const extraInterestDaysLate = principalRemaining * (lateDailyRate / 100) * daysLate;
         const extraInterestPending = Math.max(0, extraInterestDaysLate - paidExtraInterest);
         const totalInterestPending = periodInterestPending + extraInterestPending;
         const penaltyBrut = daysLate > 0 ? periodInterestPending * (penaltyRate / 100) * daysLate : 0;
         const accumulatedPenalty = Math.max(0, penaltyBrut - paidPenalty);
         const totalDue = Math.max(0, principalRemaining + totalInterestPending + accumulatedPenalty);
+        return { principal: principalRemaining, periodInterestPending, extraInterestPending, extraInterestDaysLate, accumulatedPenalty, totalInterestPending, earlyDiscount: 0, daysLate, totalDue, balance: totalDue };
+      }
+    };
 
+
+    const InvestorFinance = {
+      daysFrom: (date) => Math.max(0, Utils.daysDiff(Utils.today(), date || Utils.today())),
+      calcAporte: (ap) => {
+        const investor = DB.getInvestorById(ap.investor_id);
+        const rate = Number(investor?.daily_rate || 0);
+        const amount = Number(ap.amount || 0);
+        const days = InvestorFinance.daysFrom(ap.date);
+        const profit = amount * (rate / 100) * days;
+        return { amount, rate, days, profit, total: amount + profit };
+      },
+      calcInvestor: (investor) => {
+        const aportes = DB.getAportesByInvestor(investor?.id || '');
+        const payments = DB.getInvestorPayments(investor?.id || '');
+        let invested = 0, profit = 0, grossBalance = 0;
+        aportes.forEach(ap => {
+          const c = InvestorFinance.calcAporte(ap);
+          invested += c.amount;
+          profit += c.profit;
+          grossBalance += c.total;
+        });
+        const paid = payments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
         return {
-          principal: principalRemaining,
-          periodInterestPending,
-          extraInterestPending,
-          extraInterestDaysLate,
-          accumulatedPenalty,
-          totalInterestPending,
-          earlyDiscount: 0,
-          daysLate,
-          totalDue,
-          balance: totalDue
+          invested,
+          profit,
+          grossBalance,
+          paid,
+          availableProfit: Math.max(0, profit - paid),
+          netToReceive: Math.max(0, grossBalance - paid),
+          aportesCount: aportes.length,
+          paymentsCount: payments.length
         };
       }
     };
@@ -386,11 +657,6 @@
         const cpf = document.getElementById('cf-cpf').value.trim();
         const email = document.getElementById('cf-email').value.trim();
         const pass = document.getElementById('cf-pass').value.trim();
-        const rateDaily = parseFloat(document.getElementById('cf-rate-daily').value) || 0;
-        const rateWeekly = parseFloat(document.getElementById('cf-rate-weekly').value) || 0;
-        const rateBiweekly = parseFloat(document.getElementById('cf-rate-biweekly').value) || 0;
-        const rateMonthly = parseFloat(document.getElementById('cf-rate-monthly').value) || 0;
-        const lateDailyRate = parseFloat(document.getElementById('cf-late-daily-rate').value) || rateDaily;
 
         if (!name) return Utils.toast('Nome é obrigatório', 'error');
         if (!cpf) return Utils.toast('CPF/CNPJ é obrigatório', 'error');
@@ -401,17 +667,17 @@
         const exists = DB.getClients().some(c => c.cpf.replace(/\D/g,'') === cpfClean && c.id !== editingClient?.id);
         if (exists) return Utils.toast('CPF/CNPJ já cadastrado', 'error');
 
+        const level = document.getElementById('cf-level').value;
+        const customDailyRate = parseFloat(document.getElementById('cf-custom-rate').value || '0');
+        if (level === '4' && (isNaN(customDailyRate) || customDailyRate < 0)) return Utils.toast('Informe a taxa diária do Nível 4', 'error');
+
         const data = {
           name, cpf,
           phone: document.getElementById('cf-phone').value.trim(),
           email,
-          daily_rate: rateDaily,
-          rate_daily: rateDaily,
-          rate_weekly: rateWeekly,
-          rate_biweekly: rateBiweekly,
-          rate_monthly: rateMonthly,
-          late_daily_rate: lateDailyRate,
           password: pass,
+          level,
+          custom_daily_rate: level === '4' ? customDailyRate : 0,
           notes: document.getElementById('cf-notes').value.trim(),
           status: document.getElementById('cf-status').value
         };
@@ -427,17 +693,95 @@
         render();
       },
 
+
+      saveInvestor: (e) => {
+        e.preventDefault();
+        const name = document.getElementById('if-name').value.trim();
+        const cpf = document.getElementById('if-cpf').value.trim();
+        const dailyRate = parseFloat(document.getElementById('if-rate').value);
+        const pass = document.getElementById('if-pass').value.trim();
+        const status = document.getElementById('if-status').value;
+        if (!name) return Utils.toast('Nome é obrigatório', 'error');
+        if (!cpf || !Utils.validateCPF(cpf)) return Utils.toast('CPF inválido', 'error');
+        if (isNaN(dailyRate) || dailyRate < 0) return Utils.toast('Informe a taxa diária do investidor', 'error');
+        if (!pass) return Utils.toast('Senha é obrigatória', 'error');
+        const cpfClean = cpf.replace(/\D/g,'');
+        const exists = DB.getInvestors().some(inv => inv.cpf.replace(/\D/g,'') === cpfClean && inv.id !== editingInvestor?.id);
+        if (exists) return Utils.toast('CPF já cadastrado como investidor', 'error');
+        const data = {
+          name, cpf,
+          phone: document.getElementById('if-phone').value.trim(),
+          email: document.getElementById('if-email').value.trim(),
+          daily_rate: dailyRate,
+          password: pass,
+          status,
+          notes: document.getElementById('if-notes').value.trim()
+        };
+        if (editingInvestor?.id) {
+          DB.updateInvestor(editingInvestor.id, data);
+          Utils.toast('Investidor atualizado!', 'success');
+        } else {
+          DB.addInvestor({ id: Utils.uid(), type: 'investor', created_at: Utils.today(), ...data });
+          Utils.toast('Investidor criado!', 'success');
+        }
+        editingInvestor = null;
+        render();
+      },
+
+      saveInvestorAporte: (e, investorId) => {
+        e.preventDefault();
+        const amount = parseFloat(document.getElementById('ia-amount').value);
+        const date = document.getElementById('ia-date').value || Utils.today();
+        const notes = document.getElementById('ia-notes').value.trim();
+        if (!amount || amount <= 0) return Utils.toast('Valor do aporte inválido', 'error');
+        DB.addInvestorAporte({ id: Utils.uid(), type: 'investor_aporte', investor_id: investorId, amount, date, notes });
+        Utils.toast('Aporte registrado!', 'success');
+        render();
+      },
+
+      saveInvestorPayment: (e, investorId) => {
+        e.preventDefault();
+        const amount = parseFloat(document.getElementById('ip-amount').value);
+        const date = document.getElementById('ip-date').value || Utils.today();
+        const notes = document.getElementById('ip-notes').value.trim();
+        if (!amount || amount <= 0) return Utils.toast('Valor pago inválido', 'error');
+        DB.addInvestorPayment({ id: Utils.uid(), type: 'investor_payment', investor_id: investorId, amount, date, notes });
+        Utils.toast('Pagamento ao investidor registrado!', 'success');
+        render();
+      },
+
+      deleteInvestor: (investorId) => {
+        DB.deleteInvestor(investorId);
+        Utils.toast('Investidor excluído', 'success');
+        Utils.clearStates();
+        render();
+      },
+
+      deleteInvestorAporte: (apId) => {
+        DB.deleteInvestorAporte(apId);
+        Utils.toast('Aporte removido!', 'success');
+        render();
+      },
+
+      deleteInvestorPayment: (payId) => {
+        DB.deleteInvestorPayment(payId);
+        Utils.toast('Pagamento ao investidor removido!', 'success');
+        render();
+      },
+
       saveLoan: (e) => {
         e.preventDefault();
         const clientId = document.getElementById('lf-client').value;
         const amount = parseFloat(document.getElementById('lf-amount').value);
         const freq = document.getElementById('lf-freq').value;
-        const inst = parseInt(document.getElementById('lf-inst').value, 10);
+        let inst = parseInt(document.getElementById('lf-inst').value, 10);
+        const calculationMode = document.getElementById('lf-calc-mode')?.value || 'price';
         const loanDate = document.getElementById('lf-date').value || Utils.today();
         let firstDue = document.getElementById('lf-first').value;
 
         if (!clientId) return Utils.toast('Selecione um cliente', 'error');
         if (!amount || amount <= 0) return Utils.toast('Valor inválido', 'error');
+        if (calculationMode === 'proporcional') inst = 1;
         if (!inst || inst < 1) return Utils.toast('Número de parcelas inválido', 'error');
 
         if (!firstDue) {
@@ -447,11 +791,13 @@
         }
 
         const client = DB.getClientById(clientId);
+        const dailyRate = Finance.getLevelDailyRate(client);
         const rate = Finance.getPeriodRate(client, freq);
+        if (isNaN(rate) || rate < 0) return Utils.toast('Taxa do cliente inválida', 'error');
         const calc = Finance.calcInstallmentAmount(amount, rate, freq, inst);
         const loanId = Utils.uid();
 
-        DB.addLoan({
+        const loanData = {
           id: Utils.uid(),
           type: 'loan',
           loan_id: loanId,
@@ -462,29 +808,71 @@
           date: loanDate,
           first_due: firstDue,
           status_loan: 'ativo',
-          rate_used: rate
-        });
+          calculation_mode: calculationMode,
+          rate_used: rate,
+          daily_rate_used: dailyRate,
+          client_level_used: client?.level || '1',
+          late_daily_rate: dailyRate
+        };
 
         const dates = Finance.generateInstallmentDates(firstDue, freq, inst);
-        for (let i = 0; i < inst; i++) {
-          DB.addInstallment({
+        const installmentList = [];
+        if (calculationMode === 'proporcional') {
+          installmentList.push({
             id: Utils.uid(),
             type: 'installment',
             installment_id: Utils.uid(),
             loan_id_inst: loanId,
-            number: i + 1,
-            due_date: dates[i],
-            installment_amount: Math.round(calc.installmentAmount * 100) / 100,
-            principal: Math.round(calc.basePrincipal * 100) / 100,
-            interest: Math.round(calc.periodInterest * 100) / 100,
+            number: 1,
+            due_date: firstDue,
+            installment_amount: Math.round(amount * 100) / 100,
+            principal: Math.round(amount * 100) / 100,
+            interest: 0,
+            interest_start_date: loanDate,
+            original_principal_before_recalc: Math.round(amount * 100) / 100,
+            original_interest_before_recalc: 0,
+            start_balance: Math.round(amount * 100) / 100,
+            end_balance: 0,
             paid_principal: 0,
             paid_period_interest: 0,
             paid_extra_interest: 0,
             paid_penalty: 0,
+            total_paid_principal: 0,
+            total_paid_period_interest: 0,
+            total_paid_extra_interest: 0,
+            total_paid_penalty: 0,
             last_payment_date: '',
             status_inst: 'pendente'
           });
+        } else {
+          for (let i = 0; i < inst; i++) {
+            const row = calc.schedule[i];
+            installmentList.push({
+              id: Utils.uid(),
+              type: 'installment',
+              installment_id: Utils.uid(),
+              loan_id_inst: loanId,
+              number: i + 1,
+              due_date: dates[i],
+              installment_amount: Math.round(row.installmentAmount * 100) / 100,
+              principal: Math.round(row.principal * 100) / 100,
+              interest: Math.round(row.interest * 100) / 100,
+              start_balance: Math.round(row.startBalance * 100) / 100,
+              end_balance: Math.round(row.endBalance * 100) / 100,
+              paid_principal: 0,
+              paid_period_interest: 0,
+              paid_extra_interest: 0,
+              paid_penalty: 0,
+              total_paid_principal: 0,
+              total_paid_period_interest: 0,
+              total_paid_extra_interest: 0,
+              total_paid_penalty: 0,
+              last_payment_date: '',
+              status_inst: 'pendente'
+            });
+          }
         }
+        DB.addLoanWithInstallments(loanData, installmentList);
 
         Utils.toast('Empréstimo criado!', 'success');
         editingLoan = null;
@@ -493,14 +881,36 @@
 
       processPayment: (e) => {
         e.preventDefault();
-        const instId = activeModal.inst.id;
+        const instId = activeModal?.instId || activeModal?.inst?.id;
         const amount = parseFloat(document.getElementById('pay-amount').value);
         const type = document.getElementById('pay-type').value;
         const paymentDate = document.getElementById('pay-date').value;
+        const nextDueDate = document.getElementById('pay-next-due')?.value || '';
+        if (!instId) return Utils.toast('Parcela não selecionada', 'error');
         if (!amount || amount <= 0) return Utils.toast('Valor inválido', 'error');
 
         const inst = DB.getInstallmentById(instId);
         if (!inst) return Utils.toast('Parcela não encontrada', 'error');
+
+        const loanForDue = DB.getLoanByKey(inst.loan_id_inst);
+        const clientForLoan = loanForDue ? DB.getClientById(loanForDue.client_id) : null;
+        const dailyRateForLoan = Number(loanForDue?.daily_rate_used ?? Finance.getLateDailyRate(clientForLoan));
+        const previousDueDate = inst.due_date;
+        const isProportional = Finance.isProportionalLoan(loanForDue);
+
+        const getAutomaticNextDueDate = () => {
+          const freqDays = { diario:1, semanal:7, quinzenal:15, mensal:30 };
+          const days = freqDays[loanForDue?.frequency] || 30;
+          const d = new Date(paymentDate + 'T12:00:00');
+          d.setDate(d.getDate() + days);
+          return d.toISOString().split('T')[0];
+        };
+
+        let desiredNewDue = nextDueDate;
+        if (desiredNewDue && new Date(desiredNewDue + 'T12:00:00') <= new Date(paymentDate + 'T12:00:00')) {
+          return Utils.toast('A nova data precisa ser maior que a data do pagamento', 'error');
+        }
+
         const det = Finance.calcInstallmentDetails(inst, paymentDate);
         let remainingAmount = amount;
 
@@ -513,10 +923,8 @@
         let newPaidPeriodInterest = Number(inst.paid_period_interest || 0);
         let newPaidExtraInterest = Number(inst.paid_extra_interest || 0);
         let newPaidPenalty = Number(inst.paid_penalty || 0);
-        let newDue = inst.due_date;
-        let newStatus = inst.status_inst;
-        let newLastPaymentDate = paymentDate;
 
+        // Ordem correta: juros do período -> juros extras -> multa -> principal.
         paidToPeriodInterest = Math.min(det.periodInterestPending, remainingAmount);
         newPaidPeriodInterest += paidToPeriodInterest;
         remainingAmount -= paidToPeriodInterest;
@@ -532,26 +940,66 @@
         if (type !== 'jurosMulta') {
           paidToPrincipal = Math.min(det.principal, remainingAmount);
           newPaidPrincipal += paidToPrincipal;
+          remainingAmount -= paidToPrincipal;
         }
 
-        if (type === 'jurosMulta') {
-          const d = new Date(paymentDate + 'T12:00:00');
-          d.setDate(d.getDate() + 30);
-          newDue = d.toISOString().split('T')[0];
-          newStatus = 'pendente';
-          Utils.toast('Juros e multa pagos. Vencimento renovado.', 'success');
+        const remainingPrincipalAfterPayment = Math.max(0, det.principal - paidToPrincipal);
+        const cumulativePrincipal = Finance.getPaidTotal(inst, 'principal') + paidToPrincipal;
+        const cumulativePeriodInterest = Finance.getPaidTotal(inst, 'periodInterest') + paidToPeriodInterest;
+        const cumulativeExtraInterest = Finance.getPaidTotal(inst, 'extraInterest') + paidToExtraInterest;
+        const cumulativePenalty = Finance.getPaidTotal(inst, 'penalty') + paidToPenalty;
+
+        let newDue = previousDueDate;
+        let patch = {
+          paid_principal: newPaidPrincipal,
+          paid_period_interest: newPaidPeriodInterest,
+          paid_extra_interest: newPaidExtraInterest,
+          paid_penalty: newPaidPenalty,
+          total_paid_principal: cumulativePrincipal,
+          total_paid_period_interest: cumulativePeriodInterest,
+          total_paid_extra_interest: cumulativeExtraInterest,
+          total_paid_penalty: cumulativePenalty,
+          last_payment_date: paymentDate
+        };
+
+        const tempInst = { ...inst, ...patch };
+        const detAfter = Finance.calcInstallmentDetails(tempInst, paymentDate);
+        const fullyPaid = remainingPrincipalAfterPayment <= 0.009 && detAfter.totalInterestPending <= 0.009 && detAfter.accumulatedPenalty <= 0.009;
+
+        if (fullyPaid) {
+          patch = { ...patch, status_inst: 'pago' };
+          Utils.toast('Parcela quitada!', 'success');
         } else {
-          const tempInst = {
-            ...inst,
-            paid_principal: newPaidPrincipal,
-            paid_period_interest: newPaidPeriodInterest,
-            paid_extra_interest: newPaidExtraInterest,
-            paid_penalty: newPaidPenalty,
-            last_payment_date: paymentDate
+          // Se for saldo corrido proporcional, o juros é apurado só até a data real do pagamento.
+          // Depois do pagamento, o saldo restante vira a nova base e começa novo ciclo nessa data.
+          const paymentBeforeDue = new Date(paymentDate + 'T12:00:00') < new Date(previousDueDate + 'T12:00:00');
+          newDue = desiredNewDue || (paymentBeforeDue ? previousDueDate : getAutomaticNextDueDate());
+          const roundedPrincipal = Math.round(remainingPrincipalAfterPayment * 100) / 100;
+          let roundedInterest = 0;
+          if (!isProportional) {
+            const interestStartDate = paymentBeforeDue ? previousDueDate : paymentDate;
+            const futureInterest = Finance.calcFutureInterest(remainingPrincipalAfterPayment, dailyRateForLoan, interestStartDate, newDue);
+            roundedInterest = Math.round(futureInterest * 100) / 100;
+          }
+          patch = {
+            ...patch,
+            original_principal_before_recalc: Number(inst.original_principal_before_recalc ?? inst.principal ?? 0),
+            original_interest_before_recalc: Number(inst.original_interest_before_recalc ?? inst.interest ?? 0),
+            principal: roundedPrincipal,
+            interest: roundedInterest,
+            installment_amount: Math.round((roundedPrincipal + roundedInterest) * 100) / 100,
+            interest_start_date: isProportional ? paymentDate : (inst.interest_start_date || ''),
+            paid_principal: 0,
+            paid_period_interest: 0,
+            paid_extra_interest: 0,
+            paid_penalty: 0,
+            start_balance: roundedPrincipal,
+            end_balance: 0,
+            due_date: newDue,
+            last_payment_date: '',
+            status_inst: 'pendente'
           };
-          const detAfter = Finance.calcInstallmentDetails(tempInst, paymentDate);
-          newStatus = (detAfter.principal <= 0 && detAfter.totalInterestPending <= 0 && detAfter.accumulatedPenalty <= 0) ? 'pago' : 'pendente';
-          Utils.toast(newStatus === 'pago' ? 'Parcela quitada!' : 'Pagamento registrado!', 'success');
+          Utils.toast(isProportional ? 'Pagamento registrado. Saldo corrido atualizado pela data do pagamento!' : 'Pagamento registrado. Saldo e juros do novo vencimento recalculados!', 'success');
         }
 
         DB.addPayment({
@@ -563,24 +1011,20 @@
           payment_amount: amount,
           payment_date: paymentDate,
           payment_type: type,
+          previous_due_date: previousDueDate,
+          new_due_date: newDue !== previousDueDate ? newDue : '',
           paid_to_principal: paidToPrincipal,
           paid_to_period_interest: paidToPeriodInterest,
           paid_to_extra_interest: paidToExtraInterest,
-          paid_to_penalty: paidToPenalty
+          paid_to_penalty: paidToPenalty,
+          recalculated_remaining_principal: remainingPrincipalAfterPayment,
+          recalculated_future_interest: patch.interest ?? ''
         });
 
-        DB.updateInstallment(inst.id, {
-          paid_principal: newPaidPrincipal,
-          paid_period_interest: newPaidPeriodInterest,
-          paid_extra_interest: newPaidExtraInterest,
-          paid_penalty: newPaidPenalty,
-          due_date: newDue,
-          last_payment_date: newLastPaymentDate,
-          status_inst: newStatus
-        });
+        DB.updateInstallment(inst.id, patch);
 
         const allInst = DB.getInstallmentsByLoan(inst.loan_id_inst);
-        const allPaid = allInst.every(i => i.id === inst.id ? newStatus === 'pago' : i.status_inst === 'pago');
+        const allPaid = allInst.every(i => i.id === inst.id ? patch.status_inst === 'pago' : i.status_inst === 'pago');
         const loan = DB.getLoanByKey(inst.loan_id_inst);
         if (loan) DB.updateLoan(loan.id, { status_loan: allPaid ? 'quitado' : 'ativo' });
 
@@ -623,51 +1067,18 @@
         const remainingPayments = DB.getPaymentsByLoan(payment.loan_id_pay)
           .filter(p => p.installment_id_pay === payment.installment_id_pay && p.id !== paymentId);
 
-        const totalPaidToPrincipal = remainingPayments.reduce((sum, p) => sum + Number(p.paid_to_principal || 0), 0);
-        const totalPaidToPeriodInterest = remainingPayments.reduce((sum, p) => sum + Number(p.paid_to_period_interest || 0), 0);
-        const totalPaidToExtraInterest = remainingPayments.reduce((sum, p) => sum + Number(p.paid_to_extra_interest || 0), 0);
-        const totalPaidToPenalty = remainingPayments.reduce((sum, p) => sum + Number(p.paid_to_penalty || 0), 0);
-
-        let newDue = inst.due_date;
-        if (payment.payment_type === 'jurosMulta') {
-          const loan = DB.getLoanByKey(payment.loan_id_pay);
-          if (loan) {
-            const firstDue = new Date(loan.first_due + 'T12:00:00');
-            const freqDays = { diario:1, semanal:7, quinzenal:15, mensal:30 };
-            const days = freqDays[loan.frequency] || 30;
-            firstDue.setDate(firstDue.getDate() + (inst.number - 1) * days);
-            newDue = firstDue.toISOString().split('T')[0];
-          }
-        }
-
-        const instAfter = {
-          ...inst,
-          paid_principal: totalPaidToPrincipal,
-          paid_period_interest: totalPaidToPeriodInterest,
-          paid_extra_interest: totalPaidToExtraInterest,
-          paid_penalty: totalPaidToPenalty
-        };
-        const detAfter = Finance.calcInstallmentDetails(instAfter);
-        const newStatus = (detAfter.principal <= 0 && detAfter.totalInterestPending <= 0 && detAfter.accumulatedPenalty <= 0) ? 'pago' : 'pendente';
-
-        DB.updateInstallment(inst.id, {
-          paid_principal: totalPaidToPrincipal,
-          paid_period_interest: totalPaidToPeriodInterest,
-          paid_extra_interest: totalPaidToExtraInterest,
-          paid_penalty: totalPaidToPenalty,
-          due_date: newDue,
-          status_inst: newStatus
-        });
+        const rebuilt = Finance.rebuildInstallmentFromPayments(inst, remainingPayments);
         DB.deletePayment(paymentId);
+        DB.updateInstallment(inst.id, rebuilt);
 
         const loan = DB.getLoanByKey(payment.loan_id_pay);
         if (loan) {
           const allInst = DB.getInstallmentsByLoan(payment.loan_id_pay);
-          const allPaid = allInst.every(i => i.status_inst === 'pago');
+          const allPaid = allInst.every(i => i.id === inst.id ? rebuilt.status_inst === 'pago' : i.status_inst === 'pago');
           DB.updateLoan(loan.id, { status_loan: allPaid ? 'quitado' : 'ativo' });
         }
 
-        Utils.toast('Pagamento removido!', 'success');
+        Utils.toast('Pagamento removido e valores recalculados!', 'success');
         render();
       }
     };
@@ -680,14 +1091,18 @@
         case 'home': app.innerHTML = renderHome(title); break;
         case 'adminLogin': app.innerHTML = renderAdminLogin(title); break;
         case 'clientLogin': app.innerHTML = renderClientLogin(title); break;
+        case 'investorLogin': app.innerHTML = renderInvestorLogin(title); break;
         case 'admin': app.innerHTML = renderAdmin(title); break;
         case 'client': app.innerHTML = renderClientPortal(title); break;
+        case 'investor': app.innerHTML = renderInvestorPortal(title); break;
       }
 
       if (confirmAction) showConfirmModal();
       if (activeModal?.type === 'payment') showPaymentModal();
       if (activeModal?.type === 'message') showMessageModal();
       lucide.createIcons();
+      if (currentScreen === 'admin' && editingLoan !== null) setTimeout(updateLoanRatePlaceholder, 0);
+      if (currentScreen === 'admin' && editingClient !== null) setTimeout(toggleCustomRateField, 0);
     }
 
     function renderHome(title) {
@@ -705,6 +1120,9 @@
           </button>
           <button onclick="currentScreen='clientLogin';Utils.clearStates();render()" class="btn-outline py-4 px-6 text-base flex items-center justify-center gap-3">
             <i data-lucide="user" class="w-5 h-5"></i> Cliente
+          </button>
+          <button onclick="currentScreen='investorLogin';Utils.clearStates();render()" class="btn-outline py-4 px-6 text-base flex items-center justify-center gap-3">
+            <i data-lucide="trending-up" class="w-5 h-5"></i> Investidor
           </button>
         </div>
       </div>`;
@@ -772,10 +1190,45 @@
       }
     }
 
+
+    function renderInvestorLogin() {
+      return `<div class="flex flex-col items-center justify-center h-full p-4 md:p-6 fade-in">
+        <button onclick="currentScreen='home';Utils.clearStates();render()" class="self-start mb-6 text-gold-500 flex items-center gap-1 text-sm"><i data-lucide="arrow-left" class="w-4 h-4"></i> Voltar</button>
+        <div class="card p-6 w-full max-w-sm">
+          <h2 class="heading-font text-xl gold-gradient mb-6 text-center">Login Investidor</h2>
+          <form onsubmit="handleInvestorLogin(event)">
+            <label class="block text-sm text-slate-400 mb-1">CPF</label>
+            <input type="text" id="investor-cpf" class="input-field mb-3" placeholder="Apenas números" required>
+            <label class="block text-sm text-slate-400 mb-1">Senha</label>
+            <input type="password" id="investor-pass" class="input-field mb-4" placeholder="Sua senha" required>
+            <button type="submit" class="btn-gold w-full py-3">Entrar</button>
+          </form>
+          <p id="investor-error" class="text-red-400 text-xs mt-3 text-center hidden">Erro</p>
+        </div>
+      </div>`;
+    }
+
+    function handleInvestorLogin(e) {
+      e.preventDefault();
+      const cpf = document.getElementById('investor-cpf').value.replace(/\D/g,'');
+      const pass = document.getElementById('investor-pass').value.trim();
+      const investor = DB.getInvestors().find(inv => inv.cpf.replace(/\D/g,'') === cpf && inv.password === pass && inv.status === 'ativo');
+      if (investor) {
+        investorLoggedIn = investor.id;
+        currentScreen = 'investor';
+        render();
+      } else {
+        const err = document.getElementById('investor-error');
+        err.textContent = 'CPF, senha ou status inválido';
+        err.classList.remove('hidden');
+      }
+    }
+
     function renderAdmin(title) {
       const tabs = [
         { id:'clients', icon:'users', label:'Clientes' },
         { id:'loans', icon:'banknote', label:'Empréstimos' },
+        { id:'investors', icon:'trending-up', label:'Investidores' },
         { id:'delete-loans', icon:'trash-2', label:'Excluir' },
         { id:'health', icon:'heart-pulse', label:'Saúde' },
         { id:'terms', icon:'file-text', label:'Termos' },
@@ -785,6 +1238,7 @@
       switch(adminTab) {
         case 'clients': content = renderClientsTab(); break;
         case 'loans': content = renderLoansTab(); break;
+        case 'investors': content = renderInvestorsTab(); break;
         case 'delete-loans': content = renderDeleteLoansTab(); break;
         case 'health': content = renderHealthTab(); break;
         case 'terms': content = renderTermsTab(); break;
@@ -840,21 +1294,32 @@
           <div><label class="text-xs text-slate-400">CPF/CNPJ *</label><input class="input-field" id="cf-cpf" value="${c.cpf||''}" required></div>
           <div><label class="text-xs text-slate-400">Telefone</label><input class="input-field" id="cf-phone" value="${c.phone||''}"></div>
           <div><label class="text-xs text-slate-400">Email</label><input type="email" class="input-field" id="cf-email" value="${c.email||''}"></div>
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div><label class="text-xs text-slate-400">Taxa Diária (%)</label><input type="number" step="0.01" min="0" class="input-field" id="cf-rate-daily" value="${c.rate_daily ?? c.daily_rate ?? DB.getConfig('default_rate_daily','0.33')}" required></div>
-            <div><label class="text-xs text-slate-400">Taxa Semanal (%)</label><input type="number" step="0.01" min="0" class="input-field" id="cf-rate-weekly" value="${c.rate_weekly ?? DB.getConfig('default_rate_weekly','2.50')}" required></div>
-            <div><label class="text-xs text-slate-400">Taxa Quinzenal (%)</label><input type="number" step="0.01" min="0" class="input-field" id="cf-rate-biweekly" value="${c.rate_biweekly ?? DB.getConfig('default_rate_biweekly','5.00')}" required></div>
-            <div><label class="text-xs text-slate-400">Taxa Mensal (%)</label><input type="number" step="0.01" min="0" class="input-field" id="cf-rate-monthly" value="${c.rate_monthly ?? DB.getConfig('default_rate_monthly','10.00')}" required></div>
-            <div><label class="text-xs text-slate-400">Juros Diário em Atraso (%)</label><input type="number" step="0.01" min="0" class="input-field" id="cf-late-daily-rate" value="${c.late_daily_rate ?? c.rate_daily ?? c.daily_rate ?? DB.getConfig('default_rate_daily','0.33')}" required></div>
-            <div><label class="text-xs text-slate-400">Status</label>
-              <select class="input-field" id="cf-status"><option value="ativo" ${(c.status||'ativo')==='ativo'?'selected':''}>Ativo</option><option value="inativo" ${c.status==='inativo'?'selected':''}>Inativo</option></select>
-            </div>
+          <div><label class="text-xs text-slate-400">Status</label>
+            <select class="input-field" id="cf-status"><option value="ativo" ${(c.status||'ativo')==='ativo'?'selected':''}>Ativo</option><option value="inativo" ${c.status==='inativo'?'selected':''}>Inativo</option></select>
           </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div><label class="text-xs text-slate-400">Nível do Cliente</label>
+              <select class="input-field" id="cf-level" onchange="toggleCustomRateField()">
+                <option value="1" ${(c.level||'1')==='1'?'selected':''}>Nível 1 - 0,50% ao dia</option>
+                <option value="2" ${String(c.level)==='2'?'selected':''}>Nível 2 - 0,35% ao dia</option>
+                <option value="3" ${String(c.level)==='3'?'selected':''}>Nível 3 - 0,20% ao dia</option>
+                <option value="4" ${String(c.level)==='4'?'selected':''}>Nível 4 - taxa personalizada</option>
+              </select>
+            </div>
+            <div id="custom-rate-wrap"><label class="text-xs text-slate-400">Taxa diária Nível 4 (%)</label><input type="number" step="0.01" min="0" class="input-field" id="cf-custom-rate" value="${c.custom_daily_rate||c.rate_daily||''}" placeholder="Ex: 0.10"></div>
+          </div>
+          <p class="text-xs text-slate-500 -mt-2">A taxa do empréstimo será convertida automaticamente: diário ×1, semanal ×7, quinzenal ×15, mensal ×30.</p>
           <div><label class="text-xs text-slate-400">Senha do Portal *</label><input class="input-field" id="cf-pass" value="${c.password||''}" required></div>
           <div><label class="text-xs text-slate-400">Observações</label><textarea class="input-field" id="cf-notes" rows="2">${c.notes||''}</textarea></div>
           <button type="submit" class="btn-gold w-full py-3">Salvar</button>
         </form>
       </div>`;
+    }
+
+    function toggleCustomRateField() {
+      const level = document.getElementById('cf-level')?.value || '1';
+      const wrap = document.getElementById('custom-rate-wrap');
+      if (wrap) wrap.style.display = level === '4' ? 'block' : 'none';
     }
 
     function renderClientDetail() {
@@ -870,9 +1335,8 @@
           </div>
           <div class="grid grid-cols-2 gap-2 text-sm text-slate-400">
             <p>CPF: ${c.cpf}</p><p>Tel: ${c.phone||'-'}</p>
-            <p>Diário: ${Number(c.rate_daily ?? c.daily_rate ?? 0).toFixed(2)}%</p><p>Semanal: ${Number(c.rate_weekly ?? 0).toFixed(2)}%</p>
-            <p>Quinzenal: ${Number(c.rate_biweekly ?? 0).toFixed(2)}%</p><p>Mensal: ${Number(c.rate_monthly ?? 0).toFixed(2)}%</p>
-            <p>Atraso ao dia: ${Number(c.late_daily_rate ?? c.rate_daily ?? c.daily_rate ?? 0).toFixed(2)}%</p><p>Multa: 1%/dia</p>
+            <p>Email: ${c.email||'-'}</p><p>Senha portal: ${c.password ? 'Cadastrada' : '-'}</p>
+            <p>Nível: ${c.level || '1'}</p><p>Taxa diária: ${Finance.getLevelDailyRate(c).toFixed(2)}%</p>
           </div>
           ${c.notes ? `<p class="text-xs text-slate-500 mt-2">Obs: ${c.notes}</p>` : ''}
           <div class="flex gap-2 mt-3">
@@ -890,25 +1354,203 @@
       </div>`;
     }
 
+
+    function renderInvestorsTab() {
+      if (editingInvestor !== null) return renderInvestorForm();
+      if (viewingInvestor) return renderInvestorDetail();
+      const investors = DB.getInvestors();
+      const totalInvested = investors.reduce((sum, inv) => sum + InvestorFinance.calcInvestor(inv).invested, 0);
+      const totalProfit = investors.reduce((sum, inv) => sum + InvestorFinance.calcInvestor(inv).profit, 0);
+      const totalPaid = investors.reduce((sum, inv) => sum + InvestorFinance.calcInvestor(inv).paid, 0);
+      return `<div>
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <h2 class="text-lg font-semibold">Investidores <span class="text-slate-500 text-sm">(${investors.length})</span></h2>
+            <p class="text-xs text-slate-400">Total investido: ${Utils.fmtMoney(totalInvested)} • Lucro gerado: ${Utils.fmtMoney(totalProfit)} • Pago: ${Utils.fmtMoney(totalPaid)}</p>
+          </div>
+          <button onclick="editingInvestor={status:'ativo'};render()" class="btn-gold py-2 px-4 text-sm flex items-center gap-1"><i data-lucide="plus" class="w-4 h-4"></i> Novo</button>
+        </div>
+        ${investors.length === 0 ? '<p class="text-slate-500 text-center py-8">Nenhum investidor cadastrado</p>' : investors.map(inv => {
+          const calc = InvestorFinance.calcInvestor(inv);
+          return `<div class="card card-hover p-4 mb-3" onclick="viewingInvestor='${inv.id}';render()">
+            <div class="flex items-center justify-between gap-3">
+              <div class="min-w-0">
+                <p class="font-semibold">${inv.name}</p>
+                <p class="text-xs text-slate-400">${inv.cpf} • ${Number(inv.daily_rate||0).toFixed(2)}% ao dia • ${calc.aportesCount} aportes</p>
+                <p class="text-sm text-gold-400">Investido ${Utils.fmtMoney(calc.invested)} • Lucro ${Utils.fmtMoney(calc.profit)} • Disponível ${Utils.fmtMoney(calc.availableProfit)}</p>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="badge ${inv.status==='ativo'?'badge-active':'badge-inactive'}">${inv.status || 'ativo'}</span>
+                <i data-lucide="chevron-right" class="w-4 h-4 text-slate-500"></i>
+              </div>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>`;
+    }
+
+    function renderInvestorForm() {
+      const inv = editingInvestor || {};
+      const isEdit = !!inv.id;
+      return `<div>
+        <button onclick="editingInvestor=null;render()" class="text-gold-500 flex items-center gap-1 text-sm mb-4"><i data-lucide="arrow-left" class="w-4 h-4"></i> Voltar</button>
+        <h2 class="text-lg font-semibold mb-4">${isEdit ? 'Editar' : 'Novo'} Investidor</h2>
+        <form onsubmit="Crud.saveInvestor(event)" class="space-y-3">
+          <div><label class="text-xs text-slate-400">Nome *</label><input class="input-field" id="if-name" value="${inv.name||''}" required></div>
+          <div><label class="text-xs text-slate-400">CPF *</label><input class="input-field" id="if-cpf" value="${inv.cpf||''}" required></div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div><label class="text-xs text-slate-400">Telefone</label><input class="input-field" id="if-phone" value="${inv.phone||''}"></div>
+            <div><label class="text-xs text-slate-400">Email</label><input type="email" class="input-field" id="if-email" value="${inv.email||''}"></div>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div><label class="text-xs text-slate-400">% diária do investidor *</label><input type="number" step="0.01" min="0" class="input-field" id="if-rate" value="${inv.daily_rate ?? ''}" placeholder="Ex: 0.30" required></div>
+            <div><label class="text-xs text-slate-400">Status</label>
+              <select class="input-field" id="if-status"><option value="ativo" ${(inv.status||'ativo')==='ativo'?'selected':''}>Ativo</option><option value="inativo" ${inv.status==='inativo'?'selected':''}>Inativo</option></select>
+            </div>
+          </div>
+          <div><label class="text-xs text-slate-400">Senha do Portal *</label><input class="input-field" id="if-pass" value="${inv.password||''}" required></div>
+          <div><label class="text-xs text-slate-400">Observações</label><textarea class="input-field" id="if-notes" rows="2">${inv.notes||''}</textarea></div>
+          <button type="submit" class="btn-gold w-full py-3">Salvar Investidor</button>
+        </form>
+      </div>`;
+    }
+
+    function renderInvestorDetail() {
+      const inv = DB.getInvestorById(viewingInvestor);
+      if (!inv) { viewingInvestor = null; return '<p>Investidor não encontrado</p>'; }
+      const calc = InvestorFinance.calcInvestor(inv);
+      const aportes = DB.getAportesByInvestor(inv.id);
+      const payments = DB.getInvestorPayments(inv.id);
+      return `<div>
+        <button onclick="viewingInvestor=null;render()" class="text-gold-500 flex items-center gap-1 text-sm mb-4"><i data-lucide="arrow-left" class="w-4 h-4"></i> Voltar</button>
+        <div class="card p-4 mb-4">
+          <div class="flex items-center justify-between mb-3">
+            <div><h2 class="font-semibold text-lg">${inv.name}</h2><p class="text-xs text-slate-400">${inv.cpf} • ${Number(inv.daily_rate||0).toFixed(2)}% ao dia</p></div>
+            <span class="badge ${inv.status==='ativo'?'badge-active':'badge-inactive'}">${inv.status || 'ativo'}</span>
+          </div>
+          <div class="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center text-sm">
+            <div class="stat-card"><p class="text-xs text-slate-400">Investido</p><p class="font-bold text-gold-400">${Utils.fmtMoney(calc.invested)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Lucro Gerado</p><p class="font-bold text-green-400">${Utils.fmtMoney(calc.profit)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Saldo Bruto</p><p class="font-bold text-gold-400">${Utils.fmtMoney(calc.grossBalance)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Já Pago</p><p class="font-bold text-green-400">${Utils.fmtMoney(calc.paid)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Lucro Disponível</p><p class="font-bold text-yellow-400">${Utils.fmtMoney(calc.availableProfit)}</p></div>
+          </div>
+          <div class="flex gap-2 mt-3">
+            <button onclick="editingInvestor=JSON.parse(JSON.stringify(DB.getInvestorById('${inv.id}')));viewingInvestor=null;render()" class="btn-outline py-2 px-3 text-xs flex-1">Editar</button>
+            <button onclick="confirmAction={type:'deleteInvestor',id:'${inv.id}',name:'${inv.name}'};render()" class="btn-danger py-2 px-3 text-xs">Excluir</button>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          <div class="card p-4">
+            <h3 class="font-semibold mb-3">Adicionar Aporte</h3>
+            <form onsubmit="Crud.saveInvestorAporte(event,'${inv.id}')" class="space-y-2">
+              <input type="number" step="0.01" min="0.01" id="ia-amount" class="input-field" placeholder="Valor do aporte" required>
+              <input type="date" id="ia-date" class="input-field" value="${Utils.today()}">
+              <input id="ia-notes" class="input-field" placeholder="Observação opcional">
+              <button class="btn-gold w-full py-2">Salvar aporte</button>
+            </form>
+          </div>
+          <div class="card p-4">
+            <h3 class="font-semibold mb-3">Pagar Investidor</h3>
+            <form onsubmit="Crud.saveInvestorPayment(event,'${inv.id}')" class="space-y-2">
+              <input type="number" step="0.01" min="0.01" id="ip-amount" class="input-field" placeholder="Valor pago" required>
+              <input type="date" id="ip-date" class="input-field" value="${Utils.today()}">
+              <input id="ip-notes" class="input-field" placeholder="Observação opcional">
+              <button class="btn-gold w-full py-2">Registrar pagamento</button>
+            </form>
+          </div>
+        </div>
+
+        <h3 class="font-semibold mb-2">Aportes (${aportes.length})</h3>
+        ${aportes.length === 0 ? '<p class="text-slate-500 text-sm mb-4">Nenhum aporte registrado</p>' : aportes.map(ap => {
+          const c = InvestorFinance.calcAporte(ap);
+          return `<div class="card p-3 mb-2">
+            <div class="flex justify-between items-start gap-3">
+              <div>
+                <p class="text-sm font-medium">${Utils.fmtMoney(c.amount)} • ${Utils.fmtDate(ap.date)}</p>
+                <p class="text-xs text-slate-400">${c.days} dias • Lucro: ${Utils.fmtMoney(c.profit)} • Saldo: ${Utils.fmtMoney(c.total)}</p>
+                ${ap.notes ? `<p class="text-xs text-slate-500">Obs: ${ap.notes}</p>` : ''}
+              </div>
+              <button onclick="confirmAction={type:'deleteInvestorAporte',id:'${ap.id}',amount:'${Utils.fmtMoney(ap.amount)}'};render()" class="btn-danger py-1 px-2 text-xs"><i data-lucide="trash-2" class="w-3 h-3"></i></button>
+            </div>
+          </div>`;
+        }).join('')}
+
+        <h3 class="font-semibold mb-2 mt-4">Pagamentos ao Investidor (${payments.length})</h3>
+        ${payments.length === 0 ? '<p class="text-slate-500 text-sm">Nenhum pagamento registrado</p>' : payments.map(p => `<div class="card p-3 mb-2">
+          <div class="flex justify-between items-start gap-3">
+            <div>
+              <p class="text-sm font-medium">${Utils.fmtMoney(p.amount)} • ${Utils.fmtDate(p.date)}</p>
+              ${p.notes ? `<p class="text-xs text-slate-500">Obs: ${p.notes}</p>` : ''}
+            </div>
+            <button onclick="confirmAction={type:'deleteInvestorPayment',id:'${p.id}',amount:'${Utils.fmtMoney(p.amount)}'};render()" class="btn-danger py-1 px-2 text-xs"><i data-lucide="trash-2" class="w-3 h-3"></i></button>
+          </div>
+        </div>`).join('')}
+      </div>`;
+    }
+
     function renderLoansTab() {
       if (editingLoan !== null) return renderLoanForm();
       if (viewingLoan) return renderLoanDetail();
       const loans = DB.getLoans();
+      const grouped = loans.reduce((acc, loan) => {
+        const key = loan.client_id || 'sem-cliente';
+        if (!acc[key]) acc[key] = [];
+        acc[key].push(loan);
+        return acc;
+      }, {});
+      const clientGroups = Object.keys(grouped).map(clientId => {
+        const client = DB.getClientById(clientId);
+        const clientLoans = grouped[clientId].sort((a,b) => new Date(b.date || '1900-01-01') - new Date(a.date || '1900-01-01'));
+        const totalAmount = clientLoans.reduce((sum, l) => sum + Number(l.amount || 0), 0);
+        const activeCount = clientLoans.filter(l => l.status_loan === 'ativo').length;
+        const paidCount = clientLoans.filter(l => l.status_loan === 'quitado').length;
+        const lastLoanDate = clientLoans[0]?.date || '';
+        return { clientId, client, clientLoans, totalAmount, activeCount, paidCount, lastLoanDate };
+      }).sort((a,b) => new Date(b.lastLoanDate || '1900-01-01') - new Date(a.lastLoanDate || '1900-01-01'));
+
+      const renderLoanCard = (l, compact=false) => `<div class="card ${compact ? '' : 'card-hover'} p-${compact ? '3' : '4'} mb-3 ${compact ? 'ml-0 sm:ml-6 border-gold-800/20' : ''}" onclick="viewingLoan='${l.id}';adminTab='loans';render()">
+          <div class="flex items-center justify-between gap-3">
+            <div class="min-w-0">
+              ${!compact ? `<p class="font-semibold">${DB.getClientById(l.client_id)?.name || 'Cliente'}</p>` : `<p class="text-xs text-slate-400">Empréstimo #${String(l.loan_id || '').slice(-5).toUpperCase()}</p>`}
+              <p class="text-sm text-gold-400">${Utils.fmtMoney(l.amount)} • ${l.calculation_mode==='proporcional'?'Saldo corrido':(l.num_installments+'x '+l.frequency)} • ${Number(l.rate_used||0).toFixed(2)}%</p>
+              <p class="text-xs text-slate-400">Criado em ${Utils.fmtDate(l.date)}</p>
+            </div>
+            <span class="badge ${l.status_loan==='ativo'?'badge-active':'badge-paid'} shrink-0">${l.status_loan}</span>
+          </div>
+        </div>`;
+
       return `<div>
         <div class="flex items-center justify-between mb-4">
           <h2 class="text-lg font-semibold">Empréstimos <span class="text-slate-500 text-sm">(${loans.length})</span></h2>
           <button onclick="editingLoan={};render()" class="btn-gold py-2 px-4 text-sm flex items-center gap-1"><i data-lucide="plus" class="w-4 h-4"></i> Novo</button>
         </div>
-        ${loans.length === 0 ? '<p class="text-slate-500 text-center py-8">Nenhum empréstimo</p>' : loans.map(l => `<div class="card card-hover p-4 mb-3" onclick="viewingLoan='${l.id}';adminTab='loans';render()">
-          <div class="flex items-center justify-between">
-            <div>
-              <p class="font-semibold">${DB.getClientById(l.client_id)?.name || 'Cliente'}</p>
-              <p class="text-sm text-gold-400">${Utils.fmtMoney(l.amount)} • ${l.num_installments}x ${l.frequency}</p>
-              <p class="text-xs text-slate-400">${Utils.fmtDate(l.date)}</p>
+        ${loans.length === 0 ? '<p class="text-slate-500 text-center py-8">Nenhum empréstimo</p>' : clientGroups.map(group => {
+          if (group.clientLoans.length === 1) return renderLoanCard(group.clientLoans[0]);
+          const open = !!expandedLoanFolders[group.clientId];
+          return `<div class="card p-4 mb-3">
+            <div class="flex items-center justify-between gap-3 cursor-pointer" onclick="expandedLoanFolders['${group.clientId}'] = !expandedLoanFolders['${group.clientId}']; render()">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-10 h-10 rounded-xl bg-gold-500/15 border border-gold-500/25 flex items-center justify-center shrink-0">
+                  <i data-lucide="${open ? 'folder-open' : 'folder'}" class="w-5 h-5 text-gold-400"></i>
+                </div>
+                <div class="min-w-0">
+                  <p class="font-semibold truncate">${group.client?.name || 'Cliente sem cadastro'}</p>
+                  <p class="text-xs text-slate-400">${group.clientLoans.length} empréstimos • ${group.activeCount} ativos • ${group.paidCount} quitados</p>
+                  <p class="text-sm text-gold-400">Total emprestado: ${Utils.fmtMoney(group.totalAmount)}</p>
+                </div>
+              </div>
+              <div class="flex items-center gap-2 shrink-0">
+                <span class="badge ${group.activeCount > 0 ? 'badge-active' : 'badge-paid'}">${group.activeCount > 0 ? 'ativo' : 'quitado'}</span>
+                <i data-lucide="${open ? 'chevron-up' : 'chevron-down'}" class="w-4 h-4 text-slate-400"></i>
+              </div>
             </div>
-            <span class="badge ${l.status_loan==='ativo'?'badge-active':'badge-paid'}">${l.status_loan}</span>
-          </div>
-        </div>`).join('')}
+            ${open ? `<div class="mt-4 pt-3 border-t border-gold-800/20">
+              ${group.clientLoans.map(l => renderLoanCard(l, true)).join('')}
+            </div>` : ''}
+          </div>`;
+        }).join('')}
       </div>`;
     }
 
@@ -922,7 +1564,7 @@
           <div class="flex items-center justify-between gap-3">
             <div class="flex-1">
               <p class="font-semibold">${DB.getClientById(l.client_id)?.name || 'Cliente'}</p>
-              <p class="text-sm text-gold-400">${Utils.fmtMoney(l.amount)} • ${l.num_installments}x ${l.frequency}</p>
+              <p class="text-sm text-gold-400">${Utils.fmtMoney(l.amount)} • ${l.calculation_mode==='proporcional'?'Saldo corrido':(l.num_installments+'x '+l.frequency)} • ${Number(l.rate_used||0).toFixed(2)}%</p>
               <p class="text-xs text-slate-400">${Utils.fmtDate(l.date)}</p>
             </div>
             <button onclick="confirmAction={type:'deleteLoan',id:'${l.id}',loanKey:'${l.loan_id}',clientName:'${DB.getClientById(l.client_id)?.name || 'Cliente'}',amount:'${Utils.fmtMoney(l.amount)}'};render()" class="btn-danger py-2 px-3 text-sm flex items-center gap-1"><i data-lucide="trash-2" class="w-4 h-4"></i> Excluir</button>
@@ -939,23 +1581,32 @@
         <h2 class="text-lg font-semibold mb-4">Novo Empréstimo</h2>
         <form onsubmit="Crud.saveLoan(event)" class="space-y-3">
           <div><label class="text-xs text-slate-400">Cliente *</label>
-            <select class="input-field" id="lf-client" required>
+            <select class="input-field" id="lf-client" onchange="updateLoanRatePlaceholder()" required>
               <option value="">-- Selecione um cliente --</option>
               ${clients.map(c => `<option value="${c.id}" ${l.client_id===c.id?'selected':''}>${c.name}</option>`).join('')}
             </select>
           </div>
-          <div><label class="text-xs text-slate-400">Valor *</label><input type="number" step="0.01" min="0.01" class="input-field" id="lf-amount" value="${l.amount||''}" required></div>
+          <div><label class="text-xs text-slate-400">Valor *</label><input type="number" step="0.01" min="0.01" class="input-field" id="lf-amount" value="${l.amount||''}" oninput="updateLoanRatePlaceholder()" required></div>
+          <div><label class="text-xs text-slate-400">Tipo de cálculo</label>
+            <select class="input-field" id="lf-calc-mode" onchange="updateLoanRatePlaceholder()">
+              <option value="price" selected>Tabela Price - parcelas fixas</option>
+              <option value="proporcional">Saldo corrido proporcional</option>
+            </select>
+          </div>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div><label class="text-xs text-slate-400">Frequência</label>
-              <select class="input-field" id="lf-freq">
+            <div><label class="text-xs text-slate-400">Prazo de cobrança</label>
+              <select class="input-field" id="lf-freq" onchange="updateLoanRatePlaceholder()">
                 <option value="diario">Diário</option>
                 <option value="semanal">Semanal</option>
-                <option value="quinzenal">Quinzenal</option>
+                <option value="quinzenal">Quinzena</option>
                 <option value="mensal" selected>Mensal</option>
               </select>
             </div>
-            <div><label class="text-xs text-slate-400">Nº Parcelas *</label><input type="number" min="1" class="input-field" id="lf-inst" value="12" required></div>
+            <div><label class="text-xs text-slate-400">Nº Parcelas *</label><input type="number" min="1" class="input-field" id="lf-inst" value="12" oninput="updateLoanRatePlaceholder()" required></div>
           </div>
+          <div><label class="text-xs text-slate-400" id="lf-rate-label">% cobrada no prazo escolhido</label><input type="number" step="0.01" min="0" class="input-field" id="lf-rate" data-auto-rate="1" value="15.00" readonly required></div>
+          <p class="text-xs text-slate-500 -mt-2" id="lf-rate-help">A taxa vem do nível do cliente e converte automático pelo prazo.</p>
+          <div class="card p-3 text-xs text-slate-300" id="lf-preview">Selecione cliente, valor, prazo e parcelas para ver a simulação Price.</div>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div><label class="text-xs text-slate-400">Data Empréstimo</label><input type="date" class="input-field" id="lf-date" value="${Utils.today()}"></div>
             <div><label class="text-xs text-slate-400">1ª Parcela</label><input type="date" class="input-field" id="lf-first"></div>
@@ -965,22 +1616,65 @@
       </div>`;
     }
 
+
+    function updateLoanRatePlaceholder() {
+      const freq = document.getElementById('lf-freq')?.value || 'mensal';
+      const clientId = document.getElementById('lf-client')?.value || '';
+      const client = clientId ? DB.getClientById(clientId) : null;
+      const rateInput = document.getElementById('lf-rate');
+      const calcMode = document.getElementById('lf-calc-mode')?.value || 'price';
+      const instInput = document.getElementById('lf-inst');
+      const label = document.getElementById('lf-rate-label');
+      const help = document.getElementById('lf-rate-help');
+      const preview = document.getElementById('lf-preview');
+      const labels = { diario: '% cobrada por dia', semanal: '% cobrada por semana', quinzenal: '% cobrada por quinzena', mensal: '% cobrada por mês' };
+      const multi = { diario:1, semanal:7, quinzenal:15, mensal:30 }[freq] || 30;
+      const dailyRate = client ? Finance.getLevelDailyRate(client) : Number(DB.getConfig('level1_daily_rate','0.50'));
+      const periodRate = Finance.convertDailyRateToPeriod(dailyRate, freq);
+      if (label) label.textContent = labels[freq] || labels.mensal;
+      if (rateInput) rateInput.value = periodRate.toFixed(2);
+      if (help) help.textContent = client ? 'Cliente nível ' + (client.level || '1') + ': ' + dailyRate.toFixed(2) + '% ao dia × ' + multi + ' = ' + periodRate.toFixed(2) + '% no prazo escolhido.' : 'Selecione um cliente para aplicar a taxa do nível.';
+      const amount = Number(document.getElementById('lf-amount')?.value || 0);
+      if (instInput) {
+        if (calcMode === 'proporcional') { instInput.value = 1; instInput.disabled = true; }
+        else { instInput.disabled = false; }
+      }
+      const n = Number(document.getElementById('lf-inst')?.value || 0);
+      if (preview) {
+        if (amount > 0 && n > 0) {
+          if (calcMode === 'proporcional') {
+            const exampleDays = multi;
+            const proportionalInterest = amount * (dailyRate / 100) * exampleDays;
+            preview.innerHTML = '<b>Saldo corrido proporcional:</b><br>O juros é calculado dia a dia sobre o saldo em aberto.<br>Exemplo no prazo escolhido: ' + exampleDays + ' dias × ' + dailyRate.toFixed(2) + '% ao dia = <b class="text-gold-400">' + Utils.fmtMoney(proportionalInterest) + '</b> de juros sobre ' + Utils.fmtMoney(amount) + '.<br>Se houver pagamento antes do vencimento, calcula só até a data do pagamento e o restante abate principal.';
+          } else {
+            const calc = Finance.calcInstallmentAmount(amount, periodRate, freq, n);
+            const first = calc.schedule[0];
+            preview.innerHTML = '<b>Simulação Price:</b><br>Parcela fixa: <b class="text-gold-400">' + Utils.fmtMoney(calc.installmentAmount) + '</b><br>1ª parcela: juros ' + Utils.fmtMoney(first.interest) + ' + amortização ' + Utils.fmtMoney(first.principal) + '<br>Total estimado: ' + Utils.fmtMoney(calc.total);
+          }
+        } else {
+          preview.textContent = calcMode === 'proporcional' ? 'Informe o valor para ver a simulação proporcional.' : 'Informe valor e número de parcelas para ver a simulação Price.';
+        }
+      }
+    }
+
     function renderLoanDetail() {
       const loan = DB.getLoanById(viewingLoan);
       if (!loan) { viewingLoan = null; return '<p>Não encontrado</p>'; }
+      Finance.ensureInstallmentsForLoan(loan);
       const installments = DB.getInstallmentsByLoan(loan.loan_id);
       const payments = DB.getPaymentsByLoan(loan.loan_id);
 
-      let totalRealDebt = 0, totalPaidPrincipal = 0, totalPaidPeriodInterest = 0, totalPaidExtraInterest = 0, totalPaidPenalty = 0;
+      let totalRealDebt = 0, totalPrincipalOpen = 0, totalInterestOpen = 0, totalPaidPrincipal = 0, totalPaidPeriodInterest = 0, totalPaidExtraInterest = 0, totalPaidPenalty = 0;
       installments.forEach(inst => {
         const det = Finance.calcInstallmentDetails(inst);
         totalRealDebt += det.totalDue;
-        totalPaidPrincipal += Number(inst.paid_principal || 0);
-        totalPaidPeriodInterest += Number(inst.paid_period_interest || 0);
-        totalPaidExtraInterest += Number(inst.paid_extra_interest || 0);
-        totalPaidPenalty += Number(inst.paid_penalty || 0);
+        totalPrincipalOpen += det.principal;
+        totalInterestOpen += det.totalInterestPending + det.accumulatedPenalty;
+        totalPaidPrincipal += Finance.getPaidTotal(inst, 'principal');
+        totalPaidPeriodInterest += Finance.getPaidTotal(inst, 'periodInterest');
+        totalPaidExtraInterest += Finance.getPaidTotal(inst, 'extraInterest');
+        totalPaidPenalty += Finance.getPaidTotal(inst, 'penalty');
       });
-      const totalDue = installments.reduce((s,i) => s + Number(i.installment_amount || 0), 0);
 
       return `<div>
         <button onclick="viewingLoan=null;render()" class="text-gold-500 flex items-center gap-1 text-sm mb-4"><i data-lucide="arrow-left" class="w-4 h-4"></i> Voltar</button>
@@ -993,37 +1687,38 @@
             <span class="badge ${loan.status_loan==='ativo'?'badge-active':'badge-paid'}">${loan.status_loan}</span>
           </div>
           <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-sm">
-            <div class="stat-card"><p class="text-xs text-slate-400">Total</p><p class="font-bold text-gold-400">${Utils.fmtMoney(totalDue)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Saldo Atual</p><p class="font-bold text-red-400">${Utils.fmtMoney(totalRealDebt)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Principal Aberto</p><p class="font-bold text-gold-400">${Utils.fmtMoney(totalPrincipalOpen)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Juros/Multa Aberto</p><p class="font-bold text-yellow-400">${Utils.fmtMoney(totalInterestOpen)}</p></div>
             <div class="stat-card"><p class="text-xs text-slate-400">Principal Pago</p><p class="font-bold text-green-400">${Utils.fmtMoney(totalPaidPrincipal)}</p></div>
-            <div class="stat-card"><p class="text-xs text-slate-400">Juros Pagos</p><p class="font-bold text-green-400">${Utils.fmtMoney(totalPaidPeriodInterest + totalPaidExtraInterest)}</p></div>
-            <div class="stat-card"><p class="text-xs text-slate-400">Dívida Real</p><p class="font-bold text-red-400">${Utils.fmtMoney(totalRealDebt)}</p></div>
           </div>
           <div class="grid grid-cols-2 gap-2 mt-2 text-center text-sm">
-            <div class="stat-card"><p class="text-xs text-slate-400">Multa Paga</p><p class="font-bold text-yellow-400">${Utils.fmtMoney(totalPaidPenalty)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Juros/Multa Pagos</p><p class="font-bold text-green-400">${Utils.fmtMoney(totalPaidPeriodInterest + totalPaidExtraInterest + totalPaidPenalty)}</p></div>
             <div class="stat-card"><p class="text-xs text-slate-400">Total Recebido</p><p class="font-bold text-green-400">${Utils.fmtMoney(totalPaidPrincipal + totalPaidPeriodInterest + totalPaidExtraInterest + totalPaidPenalty)}</p></div>
           </div>
           <div class="flex gap-2 mt-3">
             <button onclick="activeModal={type:'message',loanKey:'${loan.loan_id}'};render()" class="btn-outline flex-1 py-2 text-sm flex items-center justify-center gap-1"><i data-lucide="message-circle" class="w-4 h-4"></i> Msg</button>
             <button onclick="confirmAction={type:'deleteLoan',id:'${loan.id}',loanKey:'${loan.loan_id}',clientName:'${DB.getClientById(loan.client_id)?.name || 'Cliente'}',amount:'${Utils.fmtMoney(loan.amount)}'};render()" class="btn-danger py-2 px-3 text-sm flex items-center gap-1"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
           </div>
+          ${installments.some(i => i.status_inst !== 'pago') ? `<button type="button" onclick="activeModal={type:'payment',instId:'${installments.find(i => i.status_inst !== 'pago').id}'};render();" class="btn-gold w-full py-3 mt-3 text-sm font-bold flex items-center justify-center gap-2"><i data-lucide="credit-card" class="w-4 h-4"></i> Registrar pagamento da próxima parcela</button>` : ''}
         </div>
         <h3 class="font-semibold mb-2">Parcelas</h3>
         ${installments.map(inst => {
           const det = Finance.calcInstallmentDetails(inst);
           const isPaid = inst.status_inst === 'pago';
           const isOverdue = !isPaid && det.daysLate > 0;
-          return `<div class="card p-3 mb-2">
-            <div class="flex justify-between items-center gap-3">
-              <div>
+          return `<div class="card p-3 mb-3">
+            <div class="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-3">
+              <div class="flex-1 min-w-0">
                 <p class="text-sm font-medium">#${inst.number} - ${Utils.fmtMoney(inst.installment_amount)}</p>
                 <p class="text-xs text-slate-400">Venc: ${Utils.fmtDate(inst.due_date)} ${isOverdue ? `(${det.daysLate}d atraso)` : ''}</p>
-                <p class="text-xs text-slate-500">Principal Pago: ${Utils.fmtMoney(inst.paid_principal || 0)} | Principal Pendente: ${Utils.fmtMoney(det.principal)}</p>
-                <p class="text-xs text-slate-500">Juros Pagos: ${Utils.fmtMoney((inst.paid_period_interest || 0) + (inst.paid_extra_interest || 0))} | Juros Pendentes: ${Utils.fmtMoney(det.totalInterestPending)}</p>
-                ${!isPaid && det.accumulatedPenalty > 0 ? `<p class="text-xs text-red-300">Multa: ${Utils.fmtMoney(det.accumulatedPenalty)} | Multa Paga: ${Utils.fmtMoney(inst.paid_penalty || 0)}</p>` : ''}
+                <p class="text-xs text-slate-500">Principal Pago: ${Utils.fmtMoney(Finance.getPaidTotal(inst, 'principal'))} | Principal Pendente: ${Utils.fmtMoney(det.principal)}</p>
+                <p class="text-xs text-slate-500">Juros Pagos: ${Utils.fmtMoney(Finance.getPaidTotal(inst, 'periodInterest') + Finance.getPaidTotal(inst, 'extraInterest'))} | Juros Pendentes: ${Utils.fmtMoney(det.totalInterestPending)}</p>
+                ${!isPaid && det.accumulatedPenalty > 0 ? `<p class="text-xs text-red-300">Multa: ${Utils.fmtMoney(det.accumulatedPenalty)} | Multa Paga: ${Utils.fmtMoney(Finance.getPaidTotal(inst, 'penalty'))}</p>` : ''}
               </div>
-              <div class="flex items-center gap-2">
-                <span class="badge ${isPaid?'badge-paid':isOverdue?'badge-overdue':'badge-pending'}">${isPaid?'Pago':isOverdue?'Atraso':'Pendente'}</span>
-                ${!isPaid ? `<button onclick="activeModal={type:'payment',inst:${encodeURIComponent(JSON.stringify(inst))}};render()" class="btn-gold py-1 px-2 text-xs">Pagar</button>` : ''}
+              <div class="flex flex-row sm:flex-col items-stretch sm:items-end gap-2 w-full sm:w-auto">
+                <span class="badge ${isPaid?'badge-paid':isOverdue?'badge-overdue':'badge-pending'} justify-center">${isPaid?'Pago':isOverdue?'Atraso':'Pendente'}</span>
+                ${!isPaid ? `<button type="button" onclick="event.preventDefault();event.stopPropagation();activeModal={type:'payment',instId:'${inst.id}'};render();" class="btn-gold py-2 px-4 text-xs font-bold whitespace-nowrap flex-1 sm:flex-none">Registrar pagamento</button>` : ''}
               </div>
             </div>
           </div>`;
@@ -1051,6 +1746,83 @@
       const overdueInst = allInst.filter(i => i.status_inst !== 'pago' && Utils.daysDiff(Utils.today(), i.due_date) > 0);
       const totalOverdue = overdueInst.reduce((s,i) => s + Finance.calcInstallmentDetails(i).totalDue, 0);
       const profit = totalReceived - totalLent;
+
+      const today = Utils.today();
+      const addDays = (dateStr, days) => {
+        const d = new Date(dateStr + 'T12:00:00');
+        d.setDate(d.getDate() + days);
+        return d.toISOString().split('T')[0];
+      };
+      const weekEnd = addDays(today, 7);
+      const now = new Date(today + 'T12:00:00');
+      const monthEndDate = new Date(now.getFullYear(), now.getMonth() + 1, 0, 12, 0, 0);
+      const monthEnd = monthEndDate.toISOString().split('T')[0];
+      const pendingInst = allInst.filter(i => i.status_inst !== 'pago');
+
+      const buildForecastRows = (startDate, endDate) => {
+        return pendingInst
+          .filter(inst => inst.due_date >= startDate && inst.due_date <= endDate)
+          .map(inst => {
+            const loan = DB.getLoanByKey(inst.loan_id_inst);
+            const client = loan ? DB.getClientById(loan.client_id) : null;
+            const det = Finance.calcInstallmentDetails(inst, inst.due_date);
+            return {
+              date: inst.due_date,
+              clientName: client?.name || 'Cliente não encontrado',
+              loanId: loan?.id || '',
+              instNumber: inst.number || 1,
+              amount: Number(det.totalDue || 0),
+              type: Finance.isProportionalLoan(loan) ? 'Saldo corrido' : 'Price',
+              status: inst.due_date === today ? 'Vence hoje' : 'A vencer'
+            };
+          })
+          .sort((a,b) => a.date.localeCompare(b.date) || a.clientName.localeCompare(b.clientName));
+      };
+
+      const groupForecastByDate = (rows) => rows.reduce((acc, row) => {
+        if (!acc[row.date]) acc[row.date] = { date: row.date, total: 0, rows: [] };
+        acc[row.date].total += row.amount;
+        acc[row.date].rows.push(row);
+        return acc;
+      }, {});
+
+      const renderForecastList = (rows, emptyText) => {
+        if (!rows.length) return `<p class="text-slate-500 text-sm text-center py-4">${emptyText}</p>`;
+        const grouped = groupForecastByDate(rows);
+        return Object.values(grouped).map(group => `
+          <div class="border border-gold-800/20 rounded-xl p-3 mb-3 bg-navy-900/20">
+            <div class="flex items-center justify-between gap-3 mb-2">
+              <div>
+                <p class="font-semibold text-sm text-gold-300">${Utils.fmtDate(group.date)}</p>
+                <p class="text-xs text-slate-500">${group.rows.length} recebimento(s) previsto(s)</p>
+              </div>
+              <p class="text-sm font-bold text-green-400">${Utils.fmtMoney(group.total)}</p>
+            </div>
+            <div class="space-y-2">
+              ${group.rows.map(row => `
+                <div class="flex items-center justify-between gap-3 text-xs bg-navy-800/30 rounded-lg p-2">
+                  <div class="min-w-0">
+                    <p class="text-slate-200 truncate">${row.clientName}</p>
+                    <p class="text-slate-500">Parcela #${row.instNumber} • ${row.type} • ${row.status}</p>
+                  </div>
+                  <div class="flex items-center gap-2 shrink-0">
+                    <span class="text-green-300 font-semibold">${Utils.fmtMoney(row.amount)}</span>
+                    ${row.loanId ? `<button onclick="viewingLoan='${row.loanId}';adminTab='loans';render()" class="btn-outline py-1 px-2 text-[10px]">Abrir</button>` : ''}
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        `).join('');
+      };
+
+      const weekRows = buildForecastRows(today, weekEnd);
+      const monthRows = buildForecastRows(today, monthEnd);
+      const todayRows = buildForecastRows(today, today);
+      const weekTotal = weekRows.reduce((s,r) => s + r.amount, 0);
+      const monthTotal = monthRows.reduce((s,r) => s + r.amount, 0);
+      const todayTotal = todayRows.reduce((s,r) => s + r.amount, 0);
+
       return `<div class="fade-in">
         <h2 class="text-lg font-semibold mb-4">Saúde Financeira</h2>
         <div class="grid grid-cols-2 gap-3 mb-4">
@@ -1059,6 +1831,31 @@
           <div class="stat-card"><div class="flex items-center gap-2 mb-1"><i data-lucide="alert-circle" class="w-4 h-4 text-red-400"></i><span class="text-xs text-slate-400">Em Atraso</span></div><p class="text-lg font-bold text-red-400">${Utils.fmtMoney(totalOverdue)}</p><p class="text-xs text-slate-500">${overdueInst.length} parcelas</p></div>
           <div class="stat-card"><div class="flex items-center gap-2 mb-1"><i data-lucide="bar-chart-3" class="w-4 h-4 ${profit>=0?'text-green-400':'text-red-400'}"></i><span class="text-xs text-slate-400">Resultado Bruto</span></div><p class="text-lg font-bold ${profit>=0?'text-green-400':'text-red-400'}">${Utils.fmtMoney(profit)}</p></div>
         </div>
+
+        <div class="card p-4 mb-4">
+          <div class="flex items-center justify-between mb-3">
+            <div>
+              <h3 class="font-semibold text-sm flex items-center gap-2"><i data-lucide="calendar-days" class="w-4 h-4 text-gold-400"></i> Previsão de Recebimento</h3>
+              <p class="text-xs text-slate-500">Baseada nas datas de vencimento das parcelas em aberto.</p>
+            </div>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
+            <div class="stat-card"><span class="text-xs text-slate-400">Hoje</span><p class="text-lg font-bold text-green-400">${Utils.fmtMoney(todayTotal)}</p><p class="text-xs text-slate-500">${todayRows.length} parcela(s)</p></div>
+            <div class="stat-card"><span class="text-xs text-slate-400">Próximos 7 dias</span><p class="text-lg font-bold text-green-400">${Utils.fmtMoney(weekTotal)}</p><p class="text-xs text-slate-500">${Utils.fmtDate(today)} até ${Utils.fmtDate(weekEnd)}</p></div>
+            <div class="stat-card"><span class="text-xs text-slate-400">Até fim do mês</span><p class="text-lg font-bold text-green-400">${Utils.fmtMoney(monthTotal)}</p><p class="text-xs text-slate-500">${Utils.fmtDate(today)} até ${Utils.fmtDate(monthEnd)}</p></div>
+          </div>
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div>
+              <h4 class="text-sm font-semibold mb-2 text-gold-300">Recebimentos da semana</h4>
+              ${renderForecastList(weekRows, 'Nenhum recebimento previsto para os próximos 7 dias.')}
+            </div>
+            <div>
+              <h4 class="text-sm font-semibold mb-2 text-gold-300">Recebimentos do mês</h4>
+              ${renderForecastList(monthRows, 'Nenhum recebimento previsto até o fim do mês.')}
+            </div>
+          </div>
+        </div>
+
         <div class="card p-4">
           <h3 class="font-semibold mb-2 text-sm">Resumo</h3>
           <div class="space-y-1 text-sm">
@@ -1077,10 +1874,11 @@
         <h2 class="text-lg font-semibold mb-4">Termos e Condições</h2>
         <div class="card p-4 space-y-3 text-sm text-slate-300">
           <p><b class="text-gold-400">1.</b> Os empréstimos são concedidos conforme análise individual de cada cliente.</p>
-          <p><b class="text-gold-400">2.</b> A taxa de juros diária é definida no cadastro do cliente e aplicada por período.</p>
-          <p><b class="text-gold-400">3.</b> Juros por período: principal da parcela × taxa diária × dias do período.</p>
+          <p><b class="text-gold-400">2.</b> A taxa base é definida pelo nível do cliente: Nível 1 = 0,50% ao dia, Nível 2 = 0,35% ao dia, Nível 3 = 0,20% ao dia e Nível 4 = taxa personalizada.</p>
+          <p><b class="text-gold-400">3.</b> O sistema converte a taxa pelo prazo: diário ×1, semanal ×7, quinzenal ×15 e mensal ×30.</p>
+          <p><b class="text-gold-400">3.1.</b> As parcelas são fixas pela Tabela Price, com juros sobre o saldo devedor atual e amortização do principal.</p>
           <p><b class="text-gold-400">4.</b> Em atraso, incide multa de 1% ao dia sobre os juros do período não pagos.</p>
-          <p><b class="text-gold-400">5.</b> Há juros extras de 0,5% ao dia sobre o principal restante em atraso.</p>
+          <p><b class="text-gold-400">5.</b> Em atraso, há juros extras proporcionais sobre o principal restante, usando a taxa informada no empréstimo.</p>
           <p><b class="text-gold-400">6.</b> Pagamentos parciais seguem a ordem: juros do período → juros extras → multa → principal.</p>
           <p><b class="text-gold-400">7.</b> Pagamento apenas de juros e multa renova o vencimento em 30 dias.</p>
         </div>
@@ -1094,12 +1892,12 @@
           <div><label class="text-xs text-slate-400">Nome do Negócio</label><input class="input-field" id="set-name" value="${DB.getConfig('business_name','MV Financeira')}"></div>
           <div><label class="text-xs text-slate-400">Chave PIX</label><input class="input-field" id="set-pix" value="${DB.getConfig('pix_key','')}"></div>
           <div><label class="text-xs text-slate-400">Nova senha padrão do administrador</label><input type="password" class="input-field" id="set-pass" placeholder="Digite uma nova senha ou deixe vazio para manter"></div>
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div><label class="text-xs text-slate-400">Taxa Diária Padrão (%)</label><input type="number" step="0.01" class="input-field" id="set-rate-daily" value="${DB.getConfig('default_rate_daily','0.33')}"></div>
-            <div><label class="text-xs text-slate-400">Taxa Semanal Padrão (%)</label><input type="number" step="0.01" class="input-field" id="set-rate-weekly" value="${DB.getConfig('default_rate_weekly','2.50')}"></div>
-            <div><label class="text-xs text-slate-400">Taxa Quinzenal Padrão (%)</label><input type="number" step="0.01" class="input-field" id="set-rate-biweekly" value="${DB.getConfig('default_rate_biweekly','5.00')}"></div>
-            <div><label class="text-xs text-slate-400">Taxa Mensal Padrão (%)</label><input type="number" step="0.01" class="input-field" id="set-rate-monthly" value="${DB.getConfig('default_rate_monthly','10.00')}"></div>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div><label class="text-xs text-slate-400">Nível 1 - taxa diária (%)</label><input type="number" step="0.01" class="input-field" id="set-level1" value="${DB.getConfig('level1_daily_rate','0.50')}"></div>
+            <div><label class="text-xs text-slate-400">Nível 2 - taxa diária (%)</label><input type="number" step="0.01" class="input-field" id="set-level2" value="${DB.getConfig('level2_daily_rate','0.35')}"></div>
+            <div><label class="text-xs text-slate-400">Nível 3 - taxa diária (%)</label><input type="number" step="0.01" class="input-field" id="set-level3" value="${DB.getConfig('level3_daily_rate','0.20')}"></div>
           </div>
+          <p class="text-xs text-slate-500 -mt-2">Nível 4 é definido individualmente no cadastro do cliente. O sistema converte a taxa diária para o período escolhido automaticamente.</p>
           <button type="submit" class="btn-gold w-full py-3">Salvar Configurações</button>
         </form>
         <div class="card p-4 space-y-3">
@@ -1117,10 +1915,16 @@
       e.preventDefault();
       DB.setConfig('business_name', document.getElementById('set-name').value.trim() || 'MV Financeira');
       DB.setConfig('pix_key', document.getElementById('set-pix').value.trim());
-      DB.setConfig('default_rate_daily', document.getElementById('set-rate-daily').value.trim() || '0.33');
-      DB.setConfig('default_rate_weekly', document.getElementById('set-rate-weekly').value.trim() || '2.50');
-      DB.setConfig('default_rate_biweekly', document.getElementById('set-rate-biweekly').value.trim() || '5.00');
-      DB.setConfig('default_rate_monthly', document.getElementById('set-rate-monthly').value.trim() || '10.00');
+      const level1 = document.getElementById('set-level1').value.trim() || '0.50';
+      const level2 = document.getElementById('set-level2').value.trim() || '0.35';
+      const level3 = document.getElementById('set-level3').value.trim() || '0.20';
+      DB.setConfig('level1_daily_rate', level1);
+      DB.setConfig('level2_daily_rate', level2);
+      DB.setConfig('level3_daily_rate', level3);
+      DB.setConfig('default_rate_daily', level1);
+      DB.setConfig('default_rate_weekly', String(Number(level1) * 7));
+      DB.setConfig('default_rate_biweekly', String(Number(level1) * 15));
+      DB.setConfig('default_rate_monthly', String(Number(level1) * 30));
       const pass = document.getElementById('set-pass').value.trim();
       if (pass) DB.setConfig('admin_password', pass);
       Utils.toast('Configurações salvas!', 'success');
@@ -1148,6 +1952,9 @@
             loans: parsed.loans || [],
             installments: parsed.installments || [],
             payments: parsed.payments || [],
+            investors: parsed.investors || [],
+            investor_aportes: parsed.investor_aportes || [],
+            investor_payments: parsed.investor_payments || [],
             configs: { ...defaultDB.configs, ...(parsed.configs || {}) }
           };
           persistDB();
@@ -1166,23 +1973,78 @@
       render();
     }
 
+
+    function renderInvestorPortal() {
+      const investor = DB.getInvestorById(investorLoggedIn);
+      if (!investor) { investorLoggedIn = null; currentScreen = 'home'; return ''; }
+      const calc = InvestorFinance.calcInvestor(investor);
+      const aportes = DB.getAportesByInvestor(investor.id);
+      const payments = DB.getInvestorPayments(investor.id);
+      return `<div class="flex flex-col h-full w-full fade-in">
+        <header class="flex items-center justify-between px-4 py-3 border-b border-gold-800/20">
+          <div class="flex items-center gap-2">
+            <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-gold-500 to-gold-700 flex items-center justify-center"><i data-lucide="trending-up" class="w-4 h-4 text-navy-900"></i></div>
+            <div><p class="text-sm font-semibold">${investor.name}</p><p class="text-xs text-slate-400">Investidor • ${Number(investor.daily_rate||0).toFixed(2)}% ao dia</p></div>
+          </div>
+          <button onclick="investorLoggedIn=null;Utils.clearStates();currentScreen='home';render()" class="text-slate-400 text-xs flex items-center gap-1"><i data-lucide="log-out" class="w-4 h-4"></i></button>
+        </header>
+        <div class="flex-1 overflow-auto p-4">
+          <div class="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-4">
+            <div class="stat-card text-center"><p class="text-xs text-slate-400">Total Investido</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(calc.invested)}</p></div>
+            <div class="stat-card text-center"><p class="text-xs text-slate-400">Lucro Gerado</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(calc.profit)}</p></div>
+            <div class="stat-card text-center"><p class="text-xs text-slate-400">Saldo Bruto</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(calc.grossBalance)}</p></div>
+            <div class="stat-card text-center"><p class="text-xs text-slate-400">Já Recebido</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(calc.paid)}</p></div>
+            <div class="stat-card text-center"><p class="text-xs text-slate-400">Lucro Disponível</p><p class="text-sm font-bold text-yellow-400">${Utils.fmtMoney(calc.availableProfit)}</p></div>
+          </div>
+
+          <div class="card p-3 mb-4 text-xs text-slate-300">
+            O rendimento é calculado em juros simples: valor do aporte × taxa diária × dias corridos. Pagamentos registrados pelo administrador aparecem como valores já recebidos e reduzem o lucro disponível.
+          </div>
+
+          <h3 class="font-semibold mb-2">Meus Aportes</h3>
+          ${aportes.length === 0 ? '<p class="text-slate-500 text-center py-4">Nenhum aporte cadastrado</p>' : aportes.map(ap => {
+            const c = InvestorFinance.calcAporte(ap);
+            return `<div class="card p-3 mb-3">
+              <div class="flex justify-between items-start gap-3">
+                <div>
+                  <p class="text-sm font-semibold text-gold-400">${Utils.fmtMoney(c.amount)}</p>
+                  <p class="text-xs text-slate-400">Data: ${Utils.fmtDate(ap.date)} • ${c.days} dias corridos</p>
+                  <p class="text-xs text-slate-500">Lucro gerado: ${Utils.fmtMoney(c.profit)} • Saldo do aporte: ${Utils.fmtMoney(c.total)}</p>
+                </div>
+                <span class="badge badge-active">Ativo</span>
+              </div>
+            </div>`;
+          }).join('')}
+
+          <h3 class="font-semibold mb-2 mt-4">Valores Recebidos</h3>
+          ${payments.length === 0 ? '<p class="text-slate-500 text-center py-4">Nenhum pagamento recebido registrado</p>' : payments.map(p => `<div class="card p-3 mb-2">
+            <div class="flex justify-between"><p class="text-sm font-medium">${Utils.fmtMoney(p.amount)}</p><p class="text-xs text-slate-400">${Utils.fmtDate(p.date)}</p></div>
+            ${p.notes ? `<p class="text-xs text-slate-500">${p.notes}</p>` : ''}
+          </div>`).join('')}
+        </div>
+      </div>`;
+    }
+
     function renderClientPortal() {
       const client = DB.getClientById(clientLoggedIn);
       if (!client) { clientLoggedIn = null; currentScreen = 'home'; return ''; }
       const loans = DB.getLoansByClient(client.id);
       const pix = DB.getConfig('pix_key', 'Não configurado');
-      let totalDebt = 0, totalPaidAll = 0, overdueCount = 0;
+      let totalDebt = 0, totalPrincipalOpen = 0, totalPaidAll = 0, overdueCount = 0;
 
       const loanCards = loans.map(loan => {
+        Finance.ensureInstallmentsForLoan(loan);
         const insts = DB.getInstallmentsByLoan(loan.loan_id);
-        let loanTotalRealDebt = 0, loanTotalPaidPrincipal = 0, loanTotalPaidInterest = 0;
+        let loanTotalRealDebt = 0, loanPrincipalOpen = 0, loanTotalPaidPrincipal = 0, loanTotalPaidInterest = 0;
         insts.forEach(inst => {
           const det = Finance.calcInstallmentDetails(inst);
           loanTotalRealDebt += det.totalDue;
-          loanTotalPaidPrincipal += Number(inst.paid_principal || 0);
-          loanTotalPaidInterest += Number(inst.paid_period_interest || 0) + Number(inst.paid_extra_interest || 0) + Number(inst.paid_penalty || 0);
+          loanPrincipalOpen += Number(det.principal || 0);
+          loanTotalPaidPrincipal += Finance.getPaidTotal(inst, 'principal');
+          loanTotalPaidInterest += Finance.getPaidTotal(inst, 'periodInterest') + Finance.getPaidTotal(inst, 'extraInterest') + Finance.getPaidTotal(inst, 'penalty');
         });
         totalDebt += loanTotalRealDebt;
+        totalPrincipalOpen += loanPrincipalOpen;
         totalPaidAll += loanTotalPaidPrincipal + loanTotalPaidInterest;
 
         return `<div class="card p-4 mb-4">
@@ -1191,8 +2053,10 @@
             <span class="badge ${loan.status_loan==='ativo'?'badge-active':'badge-paid'}">${loan.status_loan}</span>
           </div>
           <div class="grid grid-cols-2 gap-2 text-center mb-3">
-            <div class="stat-card"><p class="text-xs text-slate-400">Restante (Real)</p><p class="text-sm font-bold text-red-400">${Utils.fmtMoney(loanTotalRealDebt)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Saldo Atual</p><p class="text-sm font-bold text-red-400">${Utils.fmtMoney(loanTotalRealDebt)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Principal Aberto</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(loanPrincipalOpen)}</p></div>
             <div class="stat-card"><p class="text-xs text-slate-400">Principal Pago</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(loanTotalPaidPrincipal)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Juros/Multa Pago</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(loanTotalPaidInterest)}</p></div>
           </div>
           <h4 class="text-sm font-semibold mb-2">Parcelas</h4>
           ${insts.map(inst => {
@@ -1204,11 +2068,14 @@
               <div>
                 <p>#${inst.number} - ${Utils.fmtMoney(inst.installment_amount)}</p>
                 <p class="text-xs text-slate-400">Venc: ${Utils.fmtDate(inst.due_date)} ${isOverdue?'('+det.daysLate+'d)':''}</p>
-                <p class="text-xs text-slate-500">Principal Pago: ${Utils.fmtMoney(inst.paid_principal || 0)} | Principal Pendente: ${Utils.fmtMoney(det.principal)}</p>
-                <p class="text-xs text-slate-500">Juros Pagos: ${Utils.fmtMoney((inst.paid_period_interest || 0) + (inst.paid_extra_interest || 0))} | Juros Pendentes: ${Utils.fmtMoney(det.totalInterestPending)}</p>
-                ${!isPaid && det.accumulatedPenalty > 0 ? `<p class="text-xs text-red-300">Multa: ${Utils.fmtMoney(det.accumulatedPenalty)} | Multa Paga: ${Utils.fmtMoney(inst.paid_penalty || 0)}</p>` : ''}
+                <p class="text-xs text-slate-500">Principal Pago: ${Utils.fmtMoney(Finance.getPaidTotal(inst, 'principal'))} | Principal Pendente: ${Utils.fmtMoney(det.principal)}</p>
+                <p class="text-xs text-slate-500">Juros Pagos: ${Utils.fmtMoney(Finance.getPaidTotal(inst, 'periodInterest') + Finance.getPaidTotal(inst, 'extraInterest'))} | Juros Pendentes: ${Utils.fmtMoney(det.totalInterestPending)}</p>
+                ${!isPaid && det.accumulatedPenalty > 0 ? `<p class="text-xs text-red-300">Multa: ${Utils.fmtMoney(det.accumulatedPenalty)} | Multa Paga: ${Utils.fmtMoney(Finance.getPaidTotal(inst, 'penalty'))}</p>` : ''}
               </div>
-              <span class="badge ${isPaid?'badge-paid':isOverdue?'badge-overdue':'badge-pending'}">${isPaid?'Pago':isOverdue?'Atraso':'Pendente'}</span>
+              <div class="flex flex-col items-end gap-2">
+                <span class="badge ${isPaid?'badge-paid':isOverdue?'badge-overdue':'badge-pending'}">${isPaid?'Pago':isOverdue?'Atraso':'Pendente'}</span>
+                ${!isPaid ? `<button type="button" onclick="navigator.clipboard.writeText('${pix.replace(/'/g, "\\'")}');Utils.toast('PIX copiado! Faça o pagamento e envie o comprovante.');" class="btn-gold py-1 px-3 text-xs whitespace-nowrap">Pagar via PIX</button>` : ''}
+              </div>
             </div>`;
           }).join('')}
         </div>`;
@@ -1223,8 +2090,9 @@
           <button onclick="clientLoggedIn=null;Utils.clearStates();currentScreen='home';render()" class="text-slate-400 text-xs flex items-center gap-1"><i data-lucide="log-out" class="w-4 h-4"></i></button>
         </header>
         <div class="flex-1 overflow-auto p-4">
-          <div class="grid grid-cols-3 gap-2 mb-4">
-            <div class="stat-card text-center"><p class="text-xs text-slate-400">Dívida (Real)</p><p class="text-sm font-bold text-red-400">${Utils.fmtMoney(totalDebt)}</p></div>
+          <div class="grid grid-cols-2 gap-2 mb-4">
+            <div class="stat-card text-center"><p class="text-xs text-slate-400">Saldo Atual</p><p class="text-sm font-bold text-red-400">${Utils.fmtMoney(totalDebt)}</p></div>
+            <div class="stat-card text-center"><p class="text-xs text-slate-400">Principal Aberto</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(totalPrincipalOpen)}</p></div>
             <div class="stat-card text-center"><p class="text-xs text-slate-400">Total Pago</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(totalPaidAll)}</p></div>
             <div class="stat-card text-center"><p class="text-xs text-slate-400">Atraso</p><p class="text-sm font-bold text-yellow-400">${overdueCount}</p></div>
           </div>
@@ -1241,7 +2109,8 @@
     function showPaymentModal() {
       const old = document.getElementById('payment-modal');
       if (old) old.remove();
-      const inst = JSON.parse(decodeURIComponent(activeModal.inst));
+      const inst = activeModal.instId ? DB.getInstallmentById(activeModal.instId) : activeModal.inst;
+      if (!inst) { activeModal = null; return Utils.toast('Parcela não encontrada', 'error'); }
       activeModal.inst = inst;
       const det = Finance.calcInstallmentDetails(inst);
       const div = document.createElement('div');
@@ -1251,13 +2120,13 @@
         <h3 class="heading-font text-lg gold-gradient mb-4">Pagamento Parcela #${inst.number}</h3>
         <div class="space-y-2 text-sm mb-4">
           <p>Principal Original: <b>${Utils.fmtMoney(inst.principal)}</b></p>
-          <p>Principal Pago: <b class="text-green-400">${Utils.fmtMoney(inst.paid_principal||0)}</b></p>
+          <p>Principal Pago: <b class="text-green-400">${Utils.fmtMoney(Finance.getPaidTotal(inst, 'principal'))}</b></p>
           <p>Principal Restante: <b>${Utils.fmtMoney(det.principal)}</b></p>
           <hr class="border-gold-800/20 my-2">
           <p>Juros do Período: <b>${Utils.fmtMoney(inst.interest)}</b></p>
-          <p class="text-xs text-slate-500 ml-4">↳ Pagos: <b class="text-green-400">${Utils.fmtMoney(inst.paid_period_interest||0)}</b></p>
+          <p class="text-xs text-slate-500 ml-4">↳ Pagos: <b class="text-green-400">${Utils.fmtMoney(Finance.getPaidTotal(inst, 'periodInterest'))}</b></p>
           <p class="text-xs text-slate-500 ml-4">↳ Pendentes: <b>${Utils.fmtMoney(det.periodInterestPending)}</b></p>
-          ${det.extraInterestDaysLate > 0 ? `<p>Juros Extras por Atraso: <b class="text-orange-400">${Utils.fmtMoney(det.extraInterestDaysLate)}</b></p><p class="text-xs text-slate-500 ml-4">↳ Pagos: <b class="text-green-400">${Utils.fmtMoney(inst.paid_extra_interest||0)}</b></p><p class="text-xs text-slate-500 ml-4">↳ Pendentes: <b>${Utils.fmtMoney(det.extraInterestPending)}</b></p>` : ''}
+          ${det.extraInterestDaysLate > 0 ? `<p>Juros Extras por Atraso: <b class="text-orange-400">${Utils.fmtMoney(det.extraInterestDaysLate)}</b></p><p class="text-xs text-slate-500 ml-4">↳ Pagos: <b class="text-green-400">${Utils.fmtMoney(Finance.getPaidTotal(inst, 'extraInterest'))}</b></p><p class="text-xs text-slate-500 ml-4">↳ Pendentes: <b>${Utils.fmtMoney(det.extraInterestPending)}</b></p>` : ''}
           <p class="font-semibold">Total de Juros em Aberto: <b class="text-yellow-400">${Utils.fmtMoney(det.totalInterestPending)}</b></p>
           <hr class="border-gold-800/20 my-2">
           ${det.accumulatedPenalty > 0 ? `<p>Multa Acumulada: <b class="text-red-400">${Utils.fmtMoney(det.accumulatedPenalty)}</b></p>` : ''}
@@ -1275,7 +2144,10 @@
           <input type="number" step="0.01" min="0.01" class="input-field mb-2" id="pay-amount" value="${det.totalDue.toFixed(2)}" required>
           <input type="hidden" id="pay-type" value="integral">
           <label class="text-xs text-slate-400">Data do Pagamento</label>
-          <input type="date" class="input-field mb-3" id="pay-date" value="${Utils.today()}" required>
+          <input type="date" class="input-field mb-2" id="pay-date" value="${Utils.today()}" required>
+          <label class="text-xs text-slate-400">Nova data da próxima parcela / novo vencimento</label>
+          <input type="date" class="input-field mb-1" id="pay-next-due">
+          <p class="text-xs text-slate-500 mb-3">Informe a nova data. Se deixar em branco, o sistema usa o próximo prazo automático do empréstimo e recalcula os juros sobre o principal real restante.</p>
           <div class="flex gap-2">
             <button type="button" onclick="activeModal=null;document.getElementById('payment-modal')?.remove()" class="btn-outline py-2 flex-1">Cancelar</button>
             <button type="submit" class="btn-gold py-2 flex-1">Confirmar</button>
@@ -1291,38 +2163,74 @@
       const loan = DB.getLoanByKey(activeModal.loanKey);
       if (!loan) return;
       const client = DB.getClientById(loan.client_id);
-      const installments = DB.getInstallmentsByLoan(loan.loan_id).filter(i => i.status_inst !== 'pago');
+      Finance.ensureInstallmentsForLoan(loan);
+
+      const installments = DB.getInstallmentsByLoan(loan.loan_id);
+      const pendingInstallments = installments.filter(i => i.status_inst !== 'pago');
+      const payments = DB.getPaymentsByLoan(loan.loan_id);
       const pix = DB.getConfig('pix_key', 'Não configurado');
       const bizName = DB.getConfig('business_name', 'MV Financeira');
-      let totalOverdueAmount = 0;
-      let overdueDetails = '';
-      let nextDetails = '';
-      const pendingInsts = [];
+      const isProportional = Finance.isProportionalLoan(loan);
+      const dailyRate = Number(loan.daily_rate_used ?? loan.late_daily_rate ?? 0);
+      const periodLabel = { diario:'dia', semanal:'semana', quinzenal:'quinzena', mensal:'mês' }[loan.frequency] || 'período';
+      const calcLabel = isProportional ? 'Saldo corrido proporcional' : 'Tabela Price / parcelas fixas';
 
-      installments.forEach(inst => {
-        const det = Finance.calcInstallmentDetails(inst);
+      let principalOpen = 0;
+      let interestOpen = 0;
+      let penaltyOpen = 0;
+      let currentDebt = 0;
+      let overdueAmount = 0;
+      let overdueCount = 0;
+      let details = '';
+      let nextDetails = '';
+
+      pendingInstallments.forEach(inst => {
+        const det = Finance.calcInstallmentDetails(inst, Utils.today());
+        principalOpen += Number(det.principal || 0);
+        interestOpen += Number(det.totalInterestPending || 0);
+        penaltyOpen += Number(det.accumulatedPenalty || 0);
+        currentDebt += Number(det.totalDue || 0);
         if (det.daysLate > 0) {
-          totalOverdueAmount += det.totalDue;
-          overdueDetails += `\n📌 PARCELA #${inst.number}\n━━━━━━━━━━━━━━━━━━━━━━━━\nPrincipal Restante: ${Utils.fmtMoney(det.principal)}\nAtraso: ${det.daysLate} dias\n⚠️ TOTAL DEVIDO: ${Utils.fmtMoney(det.totalDue)}\n`;
-        } else if (!pendingInsts.length) {
-          pendingInsts.push({ inst, det });
+          overdueCount++;
+          overdueAmount += Number(det.totalDue || 0);
+        }
+
+        const paidPrincipal = Finance.getPaidTotal ? Finance.getPaidTotal(inst, 'principal') : Number(inst.total_paid_principal ?? inst.paid_principal ?? 0);
+        const paidInterest = (Finance.getPaidTotal ? Finance.getPaidTotal(inst, 'periodInterest') + Finance.getPaidTotal(inst, 'extraInterest') + Finance.getPaidTotal(inst, 'penalty') : Number(inst.total_paid_period_interest ?? inst.paid_period_interest ?? 0) + Number(inst.total_paid_extra_interest ?? inst.paid_extra_interest ?? 0) + Number(inst.total_paid_penalty ?? inst.paid_penalty ?? 0));
+
+        if (isProportional) {
+          details += `\n📌 SALDO CORRIDO\n━━━━━━━━━━━━━━━━━━━━━━━━\nPrincipal em aberto: ${Utils.fmtMoney(det.principal)}\nJuros corridos: ${Utils.fmtMoney(det.totalInterestPending)}\n${det.accumulatedPenalty > 0 ? `Multa: ${Utils.fmtMoney(det.accumulatedPenalty)}\n` : ''}Dias calculados: ${det.daysRunning || 0} dia(s)\nData-base dos juros: ${Utils.fmtDate(det.interestStartDate || loan.date)}\nVencimento atual: ${Utils.fmtDate(inst.due_date)}${det.daysLate > 0 ? `\nAtraso: ${det.daysLate} dia(s)` : ''}\n💰 Total atualizado hoje: ${Utils.fmtMoney(det.totalDue)}\n`;
+        } else {
+          details += `\n📌 PARCELA #${inst.number}\n━━━━━━━━━━━━━━━━━━━━━━━━\nParcela contratada: ${Utils.fmtMoney(inst.installment_amount)}\nPrincipal em aberto: ${Utils.fmtMoney(det.principal)}\nJuros/Multa em aberto: ${Utils.fmtMoney(Number(det.totalInterestPending || 0) + Number(det.accumulatedPenalty || 0))}\nPrincipal já pago: ${Utils.fmtMoney(paidPrincipal)}\nJuros/Multa já pagos: ${Utils.fmtMoney(paidInterest)}\nVencimento: ${Utils.fmtDate(inst.due_date)}${det.daysLate > 0 ? `\nAtraso: ${det.daysLate} dia(s)` : ''}\n💰 Total atualizado hoje: ${Utils.fmtMoney(det.totalDue)}\n`;
         }
       });
 
-      if (pendingInsts.length) {
-        const { inst } = pendingInsts[0];
-        const daysToVenc = Utils.daysDiff(inst.due_date, Utils.today());
-        nextDetails = `\n📅 PRÓXIMA PARCELA\n━━━━━━━━━━━━━━━━━━━━━━━━\nParcela #${inst.number}: ${Utils.fmtMoney(inst.installment_amount)}\nVencimento: ${Utils.fmtDate(inst.due_date)}${daysToVenc > 0 ? `\n(Vence em ${daysToVenc} dias)` : ''}\n`;
+      if (pendingInstallments.length > 0) {
+        const nextInst = pendingInstallments[0];
+        const nextDet = Finance.calcInstallmentDetails(nextInst, Utils.today());
+        const daysToVenc = Utils.daysDiff(nextInst.due_date, Utils.today());
+        nextDetails = `\n📅 PRÓXIMO VENCIMENTO\n━━━━━━━━━━━━━━━━━━━━━━━━\n${isProportional ? 'Saldo em aberto' : 'Parcela #' + nextInst.number}: ${Utils.fmtMoney(nextDet.totalDue)}\nData: ${Utils.fmtDate(nextInst.due_date)}${daysToVenc > 0 ? `\nVence em ${daysToVenc} dia(s)` : daysToVenc === 0 ? '\nVence hoje' : `\nEstá em atraso há ${Math.abs(daysToVenc)} dia(s)`}\n`;
       }
 
-      const msg = `Olá ${client?.name || ''}! 👋\n\nSegue o resumo de sua situação:\n${overdueDetails ? '⚠️ ATENÇÃO - PARCELAS EM ATRASO:' + overdueDetails : ''}${nextDetails}\n💰 FORMA DE PAGAMENTO\n━━━━━━━━━━━━━━━━━━━━━━━━\nPIX: ${pix}\nValor Total em Atraso: ${Utils.fmtMoney(totalOverdueAmount)}\n\nFavor realizar o pagamento no menor prazo possível.\n\nAtenciosamente,\n${bizName}`;
+      const totalReceived = payments.reduce((sum, p) => sum + Number(p.payment_amount || 0), 0);
+      const totalPaidPrincipal = installments.reduce((sum, inst) => sum + (Finance.getPaidTotal ? Finance.getPaidTotal(inst, 'principal') : Number(inst.total_paid_principal ?? inst.paid_principal ?? 0)), 0);
+      const totalPaidInterestPenalty = installments.reduce((sum, inst) => sum + (Finance.getPaidTotal ? Finance.getPaidTotal(inst, 'periodInterest') + Finance.getPaidTotal(inst, 'extraInterest') + Finance.getPaidTotal(inst, 'penalty') : Number(inst.total_paid_period_interest ?? inst.paid_period_interest ?? 0) + Number(inst.total_paid_extra_interest ?? inst.paid_extra_interest ?? 0) + Number(inst.total_paid_penalty ?? inst.paid_penalty ?? 0)), 0);
 
+      const situationLine = pendingInstallments.length === 0
+        ? '✅ Seu empréstimo está quitado no sistema.'
+        : overdueCount > 0
+          ? `⚠️ Você possui ${overdueCount} parcela(s) / cobrança(s) em atraso.`
+          : '✅ Não consta atraso neste momento.';
+
+      const msg = `Olá ${client?.name || ''}! 👋\n\nSegue o resumo atualizado do seu empréstimo na ${bizName}:\n\n🏦 DADOS DO EMPRÉSTIMO\n━━━━━━━━━━━━━━━━━━━━━━━━\nTipo de cálculo: ${calcLabel}\nValor contratado: ${Utils.fmtMoney(loan.amount)}\nTaxa diária base: ${dailyRate.toFixed(2).replace('.', ',')}% ao dia\nPrazo de cobrança: ${periodLabel}\n\n📊 SITUAÇÃO ATUAL\n━━━━━━━━━━━━━━━━━━━━━━━━\n${situationLine}\nSaldo atualizado hoje: ${Utils.fmtMoney(currentDebt)}\nPrincipal em aberto: ${Utils.fmtMoney(principalOpen)}\nJuros/Multa em aberto: ${Utils.fmtMoney(interestOpen + penaltyOpen)}\nTotal em atraso: ${Utils.fmtMoney(overdueAmount)}\n\n✅ VALORES JÁ PAGOS\n━━━━━━━━━━━━━━━━━━━━━━━━\nTotal recebido: ${Utils.fmtMoney(totalReceived)}\nPrincipal pago: ${Utils.fmtMoney(totalPaidPrincipal)}\nJuros/Multa pagos: ${Utils.fmtMoney(totalPaidInterestPenalty)}\n${nextDetails}${details ? '\n📄 DETALHAMENTO\n' + details : ''}\n💰 FORMA DE PAGAMENTO\n━━━━━━━━━━━━━━━━━━━━━━━━\nPIX: ${pix}\n\nFavor realizar o pagamento conforme combinado. Após pagar, envie o comprovante para baixa no sistema.\n\nAtenciosamente,\n${bizName}`;
+
+      const safeMsg = msg.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const div = document.createElement('div');
       div.className = 'modal-overlay';
       div.id = 'msg-modal';
       div.innerHTML = `<div class="modal-content fade-in max-h-screen overflow-y-auto">
         <h3 class="heading-font text-lg gold-gradient mb-4">Mensagem de Cobrança</h3>
-        <textarea class="input-field mb-3" rows="16" id="msg-text" readonly>${msg}</textarea>
+        <textarea class="input-field mb-3" rows="18" id="msg-text" readonly>${safeMsg}</textarea>
         <div class="flex gap-2 flex-wrap">
           <button onclick="activeModal=null;document.getElementById('msg-modal')?.remove()" class="btn-outline py-2 flex-1">Fechar</button>
           <button onclick="navigator.clipboard.writeText(document.getElementById('msg-text').value);Utils.toast('Copiado!','success')" class="btn-gold py-2 flex-1 flex items-center justify-center gap-1"><i data-lucide="copy" class="w-4 h-4"></i> Copiar</button>
@@ -1330,6 +2238,7 @@
       </div>`;
       document.body.appendChild(div);
       lucide.createIcons();
+      if (currentScreen === 'admin' && editingLoan !== null) setTimeout(updateLoanRatePlaceholder, 0);
     }
 
     function showConfirmModal() {
@@ -1370,6 +2279,37 @@
             <button onclick="Crud.deletePayment('${confirmAction.id}');confirmAction=null;document.getElementById('confirm-modal')?.remove()" class="btn-danger py-2 flex-1">Excluir</button>
           </div>
         </div>`;
+      } else if (confirmAction.type === 'deleteInvestor') {
+        content = `<div class="modal-content fade-in text-center max-w-sm">
+          <i data-lucide="alert-triangle" class="w-12 h-12 text-red-400 mx-auto mb-3"></i>
+          <h3 class="font-semibold mb-2">Excluir Investidor?</h3>
+          <p class="text-sm text-slate-300 mb-4">${confirmAction.name}</p>
+          <p class="text-xs text-red-300 mb-4">Aportes e pagamentos deste investidor também serão removidos.</p>
+          <div class="flex gap-2">
+            <button onclick="confirmAction=null;document.getElementById('confirm-modal')?.remove()" class="btn-outline py-2 flex-1">Cancelar</button>
+            <button onclick="Crud.deleteInvestor('${confirmAction.id}');confirmAction=null;document.getElementById('confirm-modal')?.remove()" class="btn-danger py-2 flex-1">Excluir</button>
+          </div>
+        </div>`;
+      } else if (confirmAction.type === 'deleteInvestorAporte') {
+        content = `<div class="modal-content fade-in text-center max-w-sm">
+          <i data-lucide="alert-triangle" class="w-12 h-12 text-red-400 mx-auto mb-3"></i>
+          <h3 class="font-semibold mb-2">Excluir Aporte?</h3>
+          <p class="text-lg font-bold text-gold-400 mb-4">${confirmAction.amount}</p>
+          <div class="flex gap-2">
+            <button onclick="confirmAction=null;document.getElementById('confirm-modal')?.remove()" class="btn-outline py-2 flex-1">Cancelar</button>
+            <button onclick="Crud.deleteInvestorAporte('${confirmAction.id}');confirmAction=null;document.getElementById('confirm-modal')?.remove()" class="btn-danger py-2 flex-1">Excluir</button>
+          </div>
+        </div>`;
+      } else if (confirmAction.type === 'deleteInvestorPayment') {
+        content = `<div class="modal-content fade-in text-center max-w-sm">
+          <i data-lucide="alert-triangle" class="w-12 h-12 text-red-400 mx-auto mb-3"></i>
+          <h3 class="font-semibold mb-2">Excluir Pagamento ao Investidor?</h3>
+          <p class="text-lg font-bold text-gold-400 mb-4">${confirmAction.amount}</p>
+          <div class="flex gap-2">
+            <button onclick="confirmAction=null;document.getElementById('confirm-modal')?.remove()" class="btn-outline py-2 flex-1">Cancelar</button>
+            <button onclick="Crud.deleteInvestorPayment('${confirmAction.id}');confirmAction=null;document.getElementById('confirm-modal')?.remove()" class="btn-danger py-2 flex-1">Excluir</button>
+          </div>
+        </div>`;
       } else if (confirmAction.type === 'resetAll') {
         content = `<div class="modal-content fade-in text-center max-w-sm">
           <i data-lucide="alert-triangle" class="w-12 h-12 text-red-400 mx-auto mb-3"></i>
@@ -1377,13 +2317,14 @@
           <p class="text-sm text-slate-300 mb-4">Clientes, empréstimos, parcelas, pagamentos e configurações serão removidos.</p>
           <div class="flex gap-2">
             <button onclick="confirmAction=null;document.getElementById('confirm-modal')?.remove()" class="btn-outline py-2 flex-1">Cancelar</button>
-            <button onclick="DB.resetAll();adminLoggedIn=false;clientLoggedIn=null;adminTab='clients';currentScreen='home';Utils.clearStates();confirmAction=null;document.getElementById('confirm-modal')?.remove();Utils.toast('Dados apagados!','success');render()" class="btn-danger py-2 flex-1">Apagar</button>
+            <button onclick="DB.resetAll();adminLoggedIn=false;clientLoggedIn=null;investorLoggedIn=null;adminTab='clients';currentScreen='home';Utils.clearStates();confirmAction=null;document.getElementById('confirm-modal')?.remove();Utils.toast('Dados apagados!','success');render()" class="btn-danger py-2 flex-1">Apagar</button>
           </div>
         </div>`;
       }
       div.innerHTML = content;
       document.body.appendChild(div);
       lucide.createIcons();
+      if (currentScreen === 'admin' && editingLoan !== null) setTimeout(updateLoanRatePlaceholder, 0);
     }
 
     async function iniciarSistema() {
@@ -1399,6 +2340,9 @@
             loans: cloud.loans || [],
             installments: cloud.installments || [],
             payments: cloud.payments || [],
+            investors: cloud.investors || [],
+            investor_aportes: cloud.investor_aportes || [],
+            investor_payments: cloud.investor_payments || [],
             configs: { ...defaultDB.configs, ...(cloud.configs || {}) }
           };
           localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
