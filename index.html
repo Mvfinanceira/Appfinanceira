@@ -331,6 +331,7 @@
       updateInstallment: (id, patch) => { const i = db.installments.findIndex(ins => ins.id === id); if (i >= 0) { db.installments[i] = { ...db.installments[i], ...patch }; persistDB(); } },
       deleteInstallment: (id) => { db.installments = db.installments.filter(i => i.id !== id); persistDB(); },
       addPayment: (data) => { db.payments.push(data); persistDB(); },
+      updatePayment: (id, patch) => { const i = db.payments.findIndex(p => p.id === id); if (i >= 0) { db.payments[i] = { ...db.payments[i], ...patch }; persistDB(); } },
       addLoanWithInstallments: (loanData, installmentList) => {
         db.loans.push(loanData);
         installmentList.forEach(item => db.installments.push(item));
@@ -398,7 +399,205 @@
         return d.toISOString().split('T')[0];
       },
       isProportionalLoan: (loan) => String(loan?.calculation_mode || 'price') === 'proporcional',
+      isFixedInstallmentLoan: (loan) => String(loan?.calculation_mode || 'price') === 'parcela_fixa',
       round2: (v) => Math.round((Number(v) || 0) * 100) / 100,
+      solveRateFromFixedPayment: (amount, fixedPayment, numInstallments) => {
+        const principal = Number(amount || 0);
+        const payment = Number(fixedPayment || 0);
+        const n = Math.max(1, Number(numInstallments || 1));
+        if (principal <= 0 || payment <= 0) return null;
+        const minPayment = principal / n;
+        if (payment < minPayment - 0.005) return null;
+        if (Math.abs(payment - minPayment) <= 0.005) return 0;
+        let low = 0;
+        let high = 1;
+        const pricePayment = (rate) => {
+          if (rate <= 0) return minPayment;
+          const factor = Math.pow(1 + rate, n);
+          return principal * (rate * factor) / (factor - 1);
+        };
+        while (pricePayment(high) < payment && high < 10) high *= 2;
+        for (let k = 0; k < 80; k++) {
+          const mid = (low + high) / 2;
+          if (pricePayment(mid) < payment) low = mid; else high = mid;
+        }
+        return (low + high) / 2;
+      },
+      calcFixedPaymentSchedule: (amount, fixedPayment, numInstallments) => {
+        const principal = Number(amount || 0);
+        const payment = Number(fixedPayment || 0);
+        const n = Math.max(1, Number(numInstallments || 1));
+        const rateDecimal = Finance.solveRateFromFixedPayment(principal, payment, n);
+        if (rateDecimal === null) return null;
+        const schedule = [];
+        let balance = principal;
+        for (let k = 1; k <= n; k++) {
+          const interest = balance * rateDecimal;
+          let amortization = payment - interest;
+          if (k === n) amortization = balance;
+          if (amortization < 0) amortization = 0;
+          const installment = k === n ? interest + amortization : payment;
+          const startBalance = balance;
+          balance = Math.max(0, balance - amortization);
+          schedule.push({ number:k, startBalance, interest, principal:amortization, installmentAmount:installment, endBalance:balance });
+        }
+        return { basePrincipal: principal / n, periodInterest: schedule[0]?.interest || 0, installmentAmount: payment, daysInPeriod: 0, total: schedule.reduce((sum, row) => sum + row.installmentAmount, 0), schedule, periodRate: rateDecimal * 100 };
+      },
+      applyOverpaymentToLastInstallments: (loanKey, currentInstId, extraAmount) => {
+        let remaining = Finance.round2(extraAmount);
+        if (!loanKey || remaining <= 0) return 0;
+        const installments = DB.getInstallmentsByLoan(loanKey)
+          .filter(i => i.id !== currentInstId && i.status_inst !== 'pago')
+          .sort((a,b) => Number(b.number || 0) - Number(a.number || 0));
+        let applied = 0;
+        installments.forEach(inst => {
+          if (remaining <= 0) return;
+          const det = Finance.calcInstallmentDetails(inst);
+          const openTotal = Finance.round2(det.principal + det.totalInterestPending + det.accumulatedPenalty);
+          if (openTotal <= 0) return;
+          const discount = Math.min(openTotal, remaining);
+          let rest = discount;
+          let newPrincipal = Number(inst.principal || 0);
+          let newInterest = Number(inst.interest || 0);
+          let newPenaltyPaid = Number(inst.paid_penalty || 0);
+          const reducePrincipal = Math.min(newPrincipal, rest);
+          newPrincipal = Finance.round2(newPrincipal - reducePrincipal);
+          rest = Finance.round2(rest - reducePrincipal);
+          if (rest > 0) {
+            const reduceInterest = Math.min(newInterest, rest);
+            newInterest = Finance.round2(newInterest - reduceInterest);
+            rest = Finance.round2(rest - reduceInterest);
+          }
+          if (rest > 0) {
+            newPenaltyPaid = Finance.round2(newPenaltyPaid + rest);
+            rest = 0;
+          }
+          const newAmount = Finance.round2(newPrincipal + newInterest);
+          DB.updateInstallment(inst.id, {
+            principal: newPrincipal,
+            interest: newInterest,
+            installment_amount: newAmount,
+            paid_penalty: newPenaltyPaid,
+            discount_applied: Finance.round2(Number(inst.discount_applied || 0) + discount),
+            original_principal_before_discount: Number(inst.original_principal_before_discount ?? inst.principal ?? 0),
+            original_interest_before_discount: Number(inst.original_interest_before_discount ?? inst.interest ?? 0),
+            original_installment_amount_before_discount: Number(inst.original_installment_amount_before_discount ?? inst.installment_amount ?? 0),
+            status_inst: newAmount <= 0.009 ? 'pago' : inst.status_inst
+          });
+          remaining = Finance.round2(remaining - discount);
+          applied = Finance.round2(applied + discount);
+        });
+        return applied;
+      },
+      rebuildNonProportionalLoanFromPayments: (loanKey) => {
+        const loan = DB.getLoanByKey(loanKey);
+        if (!loan) return false;
+        if (Finance.isProportionalLoan(loan)) return false;
+
+        Finance.ensureInstallmentsForLoan(loan);
+        const installments = DB.getInstallmentsByLoan(loanKey).sort((a,b) => Number(a.number || 0) - Number(b.number || 0));
+        const payments = DB.getPaymentsByLoan(loanKey).sort((a,b) => {
+          const da = String(a.payment_date || '');
+          const db = String(b.payment_date || '');
+          if (da !== db) return da.localeCompare(db);
+          return String(a.id || '').localeCompare(String(b.id || ''));
+        });
+
+        const n = Math.max(1, Number(loan.num_installments || installments.length || 1));
+        const amount = Number(loan.amount || 0);
+        const calc = Finance.isFixedInstallmentLoan(loan)
+          ? Finance.calcFixedPaymentSchedule(amount, Number(loan.fixed_installment_value || 0), n)
+          : Finance.calcInstallmentAmount(amount, Number(loan.rate_used || 0), loan.frequency || 'mensal', n);
+
+        const schedule = calc?.schedule || [];
+
+        // 1) Volta as parcelas ao desenho original do empréstimo, sem mudar as datas cadastradas.
+        installments.forEach(inst => {
+          const row = schedule[Number(inst.number || 1) - 1] || {};
+          const basePrincipal = Finance.round2(Number(row.principal ?? inst.original_principal_before_discount ?? inst.principal ?? 0));
+          const baseInterest = Finance.round2(Number(row.interest ?? inst.original_interest_before_discount ?? inst.interest ?? 0));
+          const baseAmount = Finance.round2(Number(row.installmentAmount ?? (basePrincipal + baseInterest)));
+          DB.updateInstallment(inst.id, {
+            principal: basePrincipal,
+            interest: baseInterest,
+            installment_amount: baseAmount,
+            start_balance: Finance.round2(Number(row.startBalance ?? inst.start_balance ?? 0)),
+            end_balance: Finance.round2(Number(row.endBalance ?? inst.end_balance ?? 0)),
+            paid_principal: 0,
+            paid_period_interest: 0,
+            paid_extra_interest: 0,
+            paid_penalty: 0,
+            total_paid_principal: 0,
+            total_paid_period_interest: 0,
+            total_paid_extra_interest: 0,
+            total_paid_penalty: 0,
+            last_payment_date: '',
+            status_inst: 'pendente',
+            discount_applied: 0,
+            original_principal_before_discount: basePrincipal,
+            original_interest_before_discount: baseInterest,
+            original_installment_amount_before_discount: baseAmount,
+            payment_history_synced_at: new Date().toISOString()
+          });
+        });
+
+        // 2) Reaplica os pagamentos existentes em ordem de data e recalcula as sobras/descontos.
+        payments.forEach(pay => {
+          const currentInst = DB.getInstallmentById(pay.installment_id_pay);
+          if (!currentInst) return;
+          const paymentDate = pay.payment_date || Utils.today();
+          const det = Finance.calcInstallmentDetails(currentInst, paymentDate);
+          let remaining = Number(pay.payment_amount || 0);
+          let paidToPeriodInterest = Math.min(det.periodInterestPending, remaining); remaining = Finance.round2(remaining - paidToPeriodInterest);
+          let paidToExtraInterest = Math.min(det.extraInterestPending, remaining); remaining = Finance.round2(remaining - paidToExtraInterest);
+          let paidToPenalty = Math.min(det.accumulatedPenalty, remaining); remaining = Finance.round2(remaining - paidToPenalty);
+          let paidToPrincipal = 0;
+          if (pay.payment_type !== 'jurosMulta') {
+            paidToPrincipal = Math.min(det.principal, remaining);
+            remaining = Finance.round2(remaining - paidToPrincipal);
+          }
+
+          const patch = {
+            paid_principal: Finance.round2(Number(currentInst.paid_principal || 0) + paidToPrincipal),
+            paid_period_interest: Finance.round2(Number(currentInst.paid_period_interest || 0) + paidToPeriodInterest),
+            paid_extra_interest: Finance.round2(Number(currentInst.paid_extra_interest || 0) + paidToExtraInterest),
+            paid_penalty: Finance.round2(Number(currentInst.paid_penalty || 0) + paidToPenalty),
+            total_paid_principal: Finance.round2(Number(currentInst.total_paid_principal || 0) + paidToPrincipal),
+            total_paid_period_interest: Finance.round2(Number(currentInst.total_paid_period_interest || 0) + paidToPeriodInterest),
+            total_paid_extra_interest: Finance.round2(Number(currentInst.total_paid_extra_interest || 0) + paidToExtraInterest),
+            total_paid_penalty: Finance.round2(Number(currentInst.total_paid_penalty || 0) + paidToPenalty),
+            last_payment_date: paymentDate
+          };
+          const testInst = { ...currentInst, ...patch };
+          const detAfter = Finance.calcInstallmentDetails(testInst, paymentDate);
+          patch.status_inst = detAfter.totalDue <= 0.009 ? 'pago' : 'pendente';
+          DB.updateInstallment(currentInst.id, patch);
+
+          if (remaining > 0.009) {
+            const applied = Finance.applyOverpaymentToLastInstallments(loanKey, currentInst.id, remaining);
+            DB.updatePayment(pay.id, {
+              paid_to_principal: Finance.round2(paidToPrincipal),
+              paid_to_period_interest: Finance.round2(paidToPeriodInterest),
+              paid_to_extra_interest: Finance.round2(paidToExtraInterest),
+              paid_to_penalty: Finance.round2(paidToPenalty),
+              paid_extra_to_future_installments: Finance.round2(applied)
+            });
+          } else {
+            DB.updatePayment(pay.id, {
+              paid_to_principal: Finance.round2(paidToPrincipal),
+              paid_to_period_interest: Finance.round2(paidToPeriodInterest),
+              paid_to_extra_interest: Finance.round2(paidToExtraInterest),
+              paid_to_penalty: Finance.round2(paidToPenalty),
+              paid_extra_to_future_installments: 0
+            });
+          }
+        });
+
+        const updatedInstallments = DB.getInstallmentsByLoan(loanKey);
+        const allPaid = updatedInstallments.length > 0 && updatedInstallments.every(i => i.status_inst === 'pago');
+        DB.updateLoan(loan.id, { status_loan: allPaid ? 'quitado' : 'ativo', last_discount_recalc_at: new Date().toISOString() });
+        return true;
+      },
       rebuildInstallmentFromPayments: (inst, paymentsToReplay) => {
         const loan = DB.getLoanByKey(inst.loan_id_inst);
         const client = loan ? DB.getClientById(loan.client_id) : null;
@@ -778,6 +977,7 @@
         const freq = document.getElementById('lf-freq').value;
         let inst = parseInt(document.getElementById('lf-inst').value, 10);
         const calculationMode = document.getElementById('lf-calc-mode')?.value || 'price';
+        const fixedInstallmentValue = parseFloat(document.getElementById('lf-fixed-payment')?.value || '0');
         const loanDate = document.getElementById('lf-date').value || Utils.today();
         let firstDue = document.getElementById('lf-first').value;
 
@@ -785,6 +985,7 @@
         if (!amount || amount <= 0) return Utils.toast('Valor inválido', 'error');
         if (calculationMode === 'proporcional') inst = 1;
         if (!inst || inst < 1) return Utils.toast('Número de parcelas inválido', 'error');
+        if (calculationMode === 'parcela_fixa' && (!fixedInstallmentValue || fixedInstallmentValue <= 0)) return Utils.toast('Informe o valor da parcela fixa', 'error');
 
         if (!firstDue) {
           const d = new Date(loanDate + 'T12:00:00');
@@ -793,10 +994,19 @@
         }
 
         const client = DB.getClientById(clientId);
-        const dailyRate = Finance.getLevelDailyRate(client);
-        const rate = Finance.getPeriodRate(client, freq);
-        if (isNaN(rate) || rate < 0) return Utils.toast('Taxa do cliente inválida', 'error');
-        const calc = Finance.calcInstallmentAmount(amount, rate, freq, inst);
+        const multi = { diario:1, semanal:7, quinzenal:15, mensal:30 }[freq] || 30;
+        let dailyRate = Finance.getLevelDailyRate(client);
+        let rate = Finance.getPeriodRate(client, freq);
+        let calc = null;
+        if (calculationMode === 'parcela_fixa') {
+          calc = Finance.calcFixedPaymentSchedule(amount, fixedInstallmentValue, inst);
+          if (!calc) return Utils.toast('Parcela fixa menor que a amortização mínima. Aumente o valor da parcela.', 'error');
+          rate = Number(calc.periodRate || 0);
+          dailyRate = multi > 0 ? rate / multi : rate;
+        } else {
+          if (isNaN(rate) || rate < 0) return Utils.toast('Taxa do cliente inválida', 'error');
+          calc = Finance.calcInstallmentAmount(amount, rate, freq, inst);
+        }
         const loanId = Utils.uid();
 
         const loanData = {
@@ -814,7 +1024,9 @@
           rate_used: rate,
           daily_rate_used: dailyRate,
           client_level_used: client?.level || '1',
-          late_daily_rate: dailyRate
+          late_daily_rate: dailyRate,
+          fixed_installment_value: calculationMode === 'parcela_fixa' ? fixedInstallmentValue : 0,
+          calculated_from_fixed_installment: calculationMode === 'parcela_fixa'
         };
 
         const dates = Finance.generateInstallmentDates(firstDue, freq, inst);
@@ -899,6 +1111,7 @@
         const dailyRateForLoan = Number(loanForDue?.daily_rate_used ?? Finance.getLateDailyRate(clientForLoan));
         const previousDueDate = inst.due_date;
         const isProportional = Finance.isProportionalLoan(loanForDue);
+        const isInstallmentMode = !isProportional;
 
         const getAutomaticNextDueDate = () => {
           const freqDays = { diario:1, semanal:7, quinzenal:15, mensal:30 };
@@ -967,30 +1180,38 @@
         const tempInst = { ...inst, ...patch };
         const detAfter = Finance.calcInstallmentDetails(tempInst, paymentDate);
         const fullyPaid = remainingPrincipalAfterPayment <= 0.009 && detAfter.totalInterestPending <= 0.009 && detAfter.accumulatedPenalty <= 0.009;
+        const extraForFutureInstallments = Math.max(0, remainingAmount);
 
         if (fullyPaid) {
+          // Em Tabela Price e Parcela Fixa, quitar parcela não deve gerar a mesma parcela novamente em outra data.
+          // Ela fica como PAGA e qualquer valor a mais entra como desconto nas últimas parcelas.
           patch = { ...patch, status_inst: 'pago' };
+          if (isInstallmentMode) {
+            patch.last_payment_date = paymentDate;
+          }
           Utils.toast('Parcela quitada!', 'success');
+        } else if (isInstallmentMode) {
+          // Em modelos por parcelas, pagamento parcial NÃO renova vencimento e NÃO recalcula a mesma parcela.
+          // A parcela permanece pendente com os abatimentos registrados. Reprocessamento por nova data só vale no saldo corrido proporcional.
+          patch = { ...patch, status_inst: 'pendente' };
+          Utils.toast('Pagamento parcial registrado sem alterar o vencimento da parcela.', 'success');
         } else {
-          // Se for saldo corrido proporcional, o juros é apurado só até a data real do pagamento.
-          // Depois do pagamento, o saldo restante vira a nova base e começa novo ciclo nessa data.
+          // Saldo corrido proporcional: aqui sim o pagamento parcial cria novo ciclo de saldo/data.
           const paymentBeforeDue = new Date(paymentDate + 'T12:00:00') < new Date(previousDueDate + 'T12:00:00');
           newDue = desiredNewDue || (paymentBeforeDue ? previousDueDate : getAutomaticNextDueDate());
           const roundedPrincipal = Math.round(remainingPrincipalAfterPayment * 100) / 100;
           let roundedInterest = 0;
-          if (!isProportional) {
-            const interestStartDate = paymentBeforeDue ? previousDueDate : paymentDate;
-            const futureInterest = Finance.calcFutureInterest(remainingPrincipalAfterPayment, dailyRateForLoan, interestStartDate, newDue);
-            roundedInterest = Math.round(futureInterest * 100) / 100;
-          }
+          const interestStartDate = paymentBeforeDue ? previousDueDate : paymentDate;
+          const futureInterest = Finance.calcFutureInterest(remainingPrincipalAfterPayment, dailyRateForLoan, interestStartDate, newDue);
+          roundedInterest = Math.round(futureInterest * 100) / 100;
           patch = {
             ...patch,
             original_principal_before_recalc: Number(inst.original_principal_before_recalc ?? inst.principal ?? 0),
             original_interest_before_recalc: Number(inst.original_interest_before_recalc ?? inst.interest ?? 0),
             principal: roundedPrincipal,
-            interest: roundedInterest,
-            installment_amount: Math.round((roundedPrincipal + roundedInterest) * 100) / 100,
-            interest_start_date: isProportional ? paymentDate : (inst.interest_start_date || ''),
+            interest: 0,
+            installment_amount: roundedPrincipal,
+            interest_start_date: paymentDate,
             paid_principal: 0,
             paid_period_interest: 0,
             paid_extra_interest: 0,
@@ -1001,7 +1222,7 @@
             last_payment_date: '',
             status_inst: 'pendente'
           };
-          Utils.toast(isProportional ? 'Pagamento registrado. Saldo corrido atualizado pela data do pagamento!' : 'Pagamento registrado. Saldo e juros do novo vencimento recalculados!', 'success');
+          Utils.toast('Pagamento registrado. Saldo corrido atualizado pela data do pagamento!', 'success');
         }
 
         DB.addPayment({
@@ -1014,16 +1235,23 @@
           payment_date: paymentDate,
           payment_type: type,
           previous_due_date: previousDueDate,
-          new_due_date: newDue !== previousDueDate ? newDue : '',
+          new_due_date: (!isInstallmentMode && newDue !== previousDueDate) ? newDue : '',
           paid_to_principal: paidToPrincipal,
           paid_to_period_interest: paidToPeriodInterest,
           paid_to_extra_interest: paidToExtraInterest,
           paid_to_penalty: paidToPenalty,
+          paid_extra_to_future_installments: isInstallmentMode ? extraForFutureInstallments : 0,
           recalculated_remaining_principal: remainingPrincipalAfterPayment,
           recalculated_future_interest: patch.interest ?? ''
         });
 
         DB.updateInstallment(inst.id, patch);
+
+        let appliedDiscount = 0;
+        if (isInstallmentMode && extraForFutureInstallments > 0.009) {
+          appliedDiscount = Finance.applyOverpaymentToLastInstallments(inst.loan_id_inst, inst.id, extraForFutureInstallments);
+          if (appliedDiscount > 0) Utils.toast('Parcela quitada e sobra abatida das últimas parcelas: ' + Utils.fmtMoney(appliedDiscount), 'success');
+        }
 
         const allInst = DB.getInstallmentsByLoan(inst.loan_id_inst);
         const allPaid = allInst.every(i => i.id === inst.id ? patch.status_inst === 'pago' : i.status_inst === 'pago');
@@ -1031,6 +1259,99 @@
         if (loan) DB.updateLoan(loan.id, { status_loan: allPaid ? 'quitado' : 'ativo' });
 
         activeModal = null;
+        render();
+      },
+
+      recalculateLoanHistory: (loanKey) => {
+        const loan = DB.getLoanByKey(loanKey);
+        if (!loan) return Utils.toast('Empréstimo não encontrado', 'error');
+        Finance.ensureInstallmentsForLoan(loan);
+        if (!Finance.isProportionalLoan(loan)) {
+          Finance.rebuildNonProportionalLoanFromPayments(loanKey);
+          Utils.toast('Histórico sincronizado e descontos recalculados conforme os pagamentos atuais!', 'success');
+          confirmAction = null;
+          render();
+          return;
+        }
+
+        // Correção importante:
+        // Este botão NÃO deve reprocessar a dívida do zero, pois isso muda vencimentos,
+        // apaga abatimentos já lançados e pode transformar pagamento antigo em novo ciclo.
+        // Agora ele apenas sincroniza o resumo da parcela com o histórico já registrado.
+        // Os pagamentos continuam intactos, as datas de vencimento não são alteradas e
+        // os valores pagos são recompostos a partir do próprio histórico de pagamentos.
+        const installments = DB.getInstallmentsByLoan(loanKey);
+        const allPayments = DB.getPaymentsByLoan(loanKey);
+
+        installments.forEach(inst => {
+          const instPayments = allPayments
+            .filter(p => p.installment_id_pay === inst.id)
+            .sort((a,b) => {
+              const da = String(a.payment_date || '');
+              const db = String(b.payment_date || '');
+              if (da !== db) return da.localeCompare(db);
+              return String(a.id || '').localeCompare(String(b.id || ''));
+            });
+
+          const hasPaymentHistory = instPayments.length > 0;
+          const sumField = (field) => Finance.round2(instPayments.reduce((s,p) => s + Number(p[field] || 0), 0));
+          const totalPrincipal = sumField('paid_to_principal');
+          const totalPeriodInterest = sumField('paid_to_period_interest');
+          const totalExtraInterest = sumField('paid_to_extra_interest');
+          const totalPenalty = sumField('paid_to_penalty');
+          const totalAllocated = Finance.round2(totalPrincipal + totalPeriodInterest + totalExtraInterest + totalPenalty);
+          const totalPaidAmount = Finance.round2(instPayments.reduce((s,p) => s + Number(p.payment_amount || 0), 0));
+          const latestPaymentDate = hasPaymentHistory ? instPayments[instPayments.length - 1].payment_date : (inst.last_payment_date || '');
+          const originalDueDate = inst.due_date;
+          const originalInterestStart = inst.interest_start_date || '';
+          const originalStatus = inst.status_inst || 'pendente';
+          const loanForInst = DB.getLoanByKey(inst.loan_id_inst);
+          const isProportional = Finance.isProportionalLoan(loanForInst);
+
+          let patch = {
+            due_date: originalDueDate,
+            payment_history_synced_at: new Date().toISOString()
+          };
+
+          if (hasPaymentHistory && totalAllocated > 0.009) {
+            patch = {
+              ...patch,
+              total_paid_principal: totalPrincipal,
+              total_paid_period_interest: totalPeriodInterest,
+              total_paid_extra_interest: totalExtraInterest,
+              total_paid_penalty: totalPenalty
+            };
+
+            if (!isProportional) {
+              patch.paid_principal = totalPrincipal;
+              patch.paid_period_interest = totalPeriodInterest;
+              patch.paid_extra_interest = totalExtraInterest;
+              patch.paid_penalty = totalPenalty;
+              patch.last_payment_date = latestPaymentDate || inst.last_payment_date || '';
+
+              const testInst = { ...inst, ...patch, due_date: originalDueDate };
+              const det = Finance.calcInstallmentDetails(testInst, latestPaymentDate || Utils.today());
+              const expectedBase = Finance.round2(Number(inst.principal || 0) + Number(inst.interest || 0));
+              const isPaidNow = det.totalDue <= 0.009 || totalAllocated >= expectedBase - 0.009 || originalStatus === 'pago';
+              patch.status_inst = isPaidNow ? 'pago' : 'pendente';
+            } else {
+              patch.interest_start_date = originalInterestStart || inst.interest_start_date || '';
+              patch.last_payment_date = inst.last_payment_date || '';
+              patch.status_inst = originalStatus;
+            }
+          } else if (hasPaymentHistory && totalAllocated <= 0.009 && totalPaidAmount > 0.009) {
+            patch.last_payment_date = latestPaymentDate || inst.last_payment_date || '';
+            patch.status_inst = originalStatus;
+          }
+
+          DB.updateInstallment(inst.id, patch);
+        });
+
+        const updatedInstallments = DB.getInstallmentsByLoan(loanKey);
+        const allPaid = updatedInstallments.length > 0 && updatedInstallments.every(i => i.status_inst === 'pago');
+        DB.updateLoan(loan.id, { status_loan: allPaid ? 'quitado' : 'ativo', last_history_sync_at: new Date().toISOString() });
+        Utils.toast('Histórico sincronizado sem alterar vencimentos nem apagar valores pagos!', 'success');
+        confirmAction = null;
         render();
       },
 
@@ -1065,15 +1386,26 @@
         if (!payment) return;
         const inst = DB.getInstallmentById(payment.installment_id_pay);
         if (!inst) return;
+        const loan = DB.getLoanByKey(payment.loan_id_pay);
+
+        DB.deletePayment(paymentId);
+
+        // Em Tabela Price e Parcela Fixa, pagamento a mais gera desconto nas últimas parcelas.
+        // Ao excluir o pagamento, precisa reconstruir TODAS as parcelas do empréstimo,
+        // limpar os descontos antigos e reaplicar somente os pagamentos que ainda existem.
+        if (loan && !Finance.isProportionalLoan(loan)) {
+          Finance.rebuildNonProportionalLoanFromPayments(payment.loan_id_pay);
+          Utils.toast('Pagamento removido. Descontos e parcelas recalculados!', 'success');
+          render();
+          return;
+        }
 
         const remainingPayments = DB.getPaymentsByLoan(payment.loan_id_pay)
-          .filter(p => p.installment_id_pay === payment.installment_id_pay && p.id !== paymentId);
+          .filter(p => p.installment_id_pay === payment.installment_id_pay);
 
         const rebuilt = Finance.rebuildInstallmentFromPayments(inst, remainingPayments);
-        DB.deletePayment(paymentId);
         DB.updateInstallment(inst.id, rebuilt);
 
-        const loan = DB.getLoanByKey(payment.loan_id_pay);
         if (loan) {
           const allInst = DB.getInstallmentsByLoan(payment.loan_id_pay);
           const allPaid = allInst.every(i => i.id === inst.id ? rebuilt.status_inst === 'pago' : i.status_inst === 'pago');
@@ -1516,7 +1848,7 @@
           <div class="flex items-center justify-between gap-3">
             <div class="min-w-0">
               ${!compact ? `<p class="font-semibold">${DB.getClientById(l.client_id)?.name || 'Cliente'}</p>` : `<p class="text-xs text-slate-400">Empréstimo #${String(l.loan_id || '').slice(-5).toUpperCase()}</p>`}
-              <p class="text-sm text-gold-400">${Utils.fmtMoney(l.amount)} • ${l.calculation_mode==='proporcional'?'Saldo corrido':(l.num_installments+'x '+l.frequency)} • ${Number(l.rate_used||0).toFixed(2)}%</p>
+              <p class="text-sm text-gold-400">${Utils.fmtMoney(l.amount)} • ${l.calculation_mode==='proporcional'?'Saldo corrido':(l.calculation_mode==='parcela_fixa'?'Parcela fixa':(l.num_installments+'x '+l.frequency))} • ${Number(l.rate_used||0).toFixed(2)}%</p>
               <p class="text-xs text-slate-400">Criado em ${Utils.fmtDate(l.date)}</p>
             </div>
             <span class="badge ${l.status_loan==='ativo'?'badge-active':'badge-paid'} shrink-0">${l.status_loan}</span>
@@ -1566,7 +1898,7 @@
           <div class="flex items-center justify-between gap-3">
             <div class="flex-1">
               <p class="font-semibold">${DB.getClientById(l.client_id)?.name || 'Cliente'}</p>
-              <p class="text-sm text-gold-400">${Utils.fmtMoney(l.amount)} • ${l.calculation_mode==='proporcional'?'Saldo corrido':(l.num_installments+'x '+l.frequency)} • ${Number(l.rate_used||0).toFixed(2)}%</p>
+              <p class="text-sm text-gold-400">${Utils.fmtMoney(l.amount)} • ${l.calculation_mode==='proporcional'?'Saldo corrido':(l.calculation_mode==='parcela_fixa'?'Parcela fixa':(l.num_installments+'x '+l.frequency))} • ${Number(l.rate_used||0).toFixed(2)}%</p>
               <p class="text-xs text-slate-400">${Utils.fmtDate(l.date)}</p>
             </div>
             <button onclick="confirmAction={type:'deleteLoan',id:'${l.id}',loanKey:'${l.loan_id}',clientName:'${DB.getClientById(l.client_id)?.name || 'Cliente'}',amount:'${Utils.fmtMoney(l.amount)}'};render()" class="btn-danger py-2 px-3 text-sm flex items-center gap-1"><i data-lucide="trash-2" class="w-4 h-4"></i> Excluir</button>
@@ -1592,6 +1924,7 @@
           <div><label class="text-xs text-slate-400">Tipo de cálculo</label>
             <select class="input-field" id="lf-calc-mode" onchange="updateLoanRatePlaceholder()">
               <option value="price" selected>Tabela Price - parcelas fixas</option>
+              <option value="parcela_fixa">Parcela Fixa - calcular juros pelo valor da parcela</option>
               <option value="proporcional">Saldo corrido proporcional</option>
             </select>
           </div>
@@ -1608,6 +1941,7 @@
           </div>
           <div><label class="text-xs text-slate-400" id="lf-rate-label">% cobrada no prazo escolhido</label><input type="number" step="0.01" min="0" class="input-field" id="lf-rate" data-auto-rate="1" value="15.00" readonly required></div>
           <p class="text-xs text-slate-500 -mt-2" id="lf-rate-help">A taxa vem do nível do cliente e converte automático pelo prazo.</p>
+          <div id="lf-fixed-wrap" style="display:none"><label class="text-xs text-slate-400">Valor da parcela fixa *</label><input type="number" step="0.01" min="0.01" class="input-field" id="lf-fixed-payment" placeholder="Ex: 350,00" oninput="updateLoanRatePlaceholder()"><p class="text-xs text-slate-500 mt-1">Neste modo você informa a parcela desejada, e o sistema calcula a taxa/juros equivalente no caminho inverso.</p></div>
           <div class="card p-3 text-xs text-slate-300" id="lf-preview">Selecione cliente, valor, prazo e parcelas para ver a simulação Price.</div>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div><label class="text-xs text-slate-400">Data Empréstimo</label><input type="date" class="input-field" id="lf-date" value="${Utils.today()}"></div>
@@ -1626,35 +1960,59 @@
       const rateInput = document.getElementById('lf-rate');
       const calcMode = document.getElementById('lf-calc-mode')?.value || 'price';
       const instInput = document.getElementById('lf-inst');
+      const fixedWrap = document.getElementById('lf-fixed-wrap');
+      const fixedInput = document.getElementById('lf-fixed-payment');
       const label = document.getElementById('lf-rate-label');
       const help = document.getElementById('lf-rate-help');
       const preview = document.getElementById('lf-preview');
       const labels = { diario: '% cobrada por dia', semanal: '% cobrada por semana', quinzenal: '% cobrada por quinzena', mensal: '% cobrada por mês' };
       const multi = { diario:1, semanal:7, quinzenal:15, mensal:30 }[freq] || 30;
       const dailyRate = client ? Finance.getLevelDailyRate(client) : Number(DB.getConfig('level1_daily_rate','0.50'));
-      const periodRate = Finance.convertDailyRateToPeriod(dailyRate, freq);
-      if (label) label.textContent = labels[freq] || labels.mensal;
-      if (rateInput) rateInput.value = periodRate.toFixed(2);
-      if (help) help.textContent = client ? 'Cliente nível ' + (client.level || '1') + ': ' + dailyRate.toFixed(2) + '% ao dia × ' + multi + ' = ' + periodRate.toFixed(2) + '% no prazo escolhido.' : 'Selecione um cliente para aplicar a taxa do nível.';
+      let periodRate = Finance.convertDailyRateToPeriod(dailyRate, freq);
       const amount = Number(document.getElementById('lf-amount')?.value || 0);
+      if (fixedWrap) fixedWrap.style.display = calcMode === 'parcela_fixa' ? 'block' : 'none';
       if (instInput) {
         if (calcMode === 'proporcional') { instInput.value = 1; instInput.disabled = true; }
         else { instInput.disabled = false; }
       }
       const n = Number(document.getElementById('lf-inst')?.value || 0);
+      const fixedPayment = Number(fixedInput?.value || 0);
+      if (calcMode === 'parcela_fixa' && amount > 0 && n > 0 && fixedPayment > 0) {
+        const fixedCalc = Finance.calcFixedPaymentSchedule(amount, fixedPayment, n);
+        if (fixedCalc) periodRate = Number(fixedCalc.periodRate || 0);
+      }
+      if (label) label.textContent = calcMode === 'parcela_fixa' ? 'Taxa calculada pelo valor da parcela' : (labels[freq] || labels.mensal);
+      if (rateInput) rateInput.value = periodRate.toFixed(2);
+      if (help) {
+        if (calcMode === 'parcela_fixa') help.textContent = 'Modo vice-versa: informe valor, número de parcelas e valor da parcela; o sistema calcula os juros/taxa equivalente.';
+        else help.textContent = client ? 'Cliente nível ' + (client.level || '1') + ': ' + dailyRate.toFixed(2) + '% ao dia × ' + multi + ' = ' + periodRate.toFixed(2) + '% no prazo escolhido.' : 'Selecione um cliente para aplicar a taxa do nível.';
+      }
       if (preview) {
         if (amount > 0 && n > 0) {
           if (calcMode === 'proporcional') {
             const exampleDays = multi;
             const proportionalInterest = amount * (dailyRate / 100) * exampleDays;
             preview.innerHTML = '<b>Saldo corrido proporcional:</b><br>O juros é calculado dia a dia sobre o saldo em aberto.<br>Exemplo no prazo escolhido: ' + exampleDays + ' dias × ' + dailyRate.toFixed(2) + '% ao dia = <b class="text-gold-400">' + Utils.fmtMoney(proportionalInterest) + '</b> de juros sobre ' + Utils.fmtMoney(amount) + '.<br>Se houver pagamento antes do vencimento, calcula só até a data do pagamento e o restante abate principal.';
+          } else if (calcMode === 'parcela_fixa') {
+            if (!fixedPayment || fixedPayment <= 0) {
+              preview.innerHTML = '<b>Parcela Fixa:</b><br>Informe o valor da parcela para o sistema calcular os juros no caminho inverso.';
+            } else {
+              const fixedCalc = Finance.calcFixedPaymentSchedule(amount, fixedPayment, n);
+              if (!fixedCalc) {
+                preview.innerHTML = '<b class="text-red-300">Parcela inválida:</b><br>A parcela fixa precisa ser maior ou igual a ' + Utils.fmtMoney(amount / n) + ' para amortizar o empréstimo.';
+              } else {
+                const first = fixedCalc.schedule[0];
+                const impliedDaily = (Number(fixedCalc.periodRate || 0) / multi);
+                preview.innerHTML = '<b>Parcela Fixa / cálculo vice-versa:</b><br>Parcela definida: <b class="text-gold-400">' + Utils.fmtMoney(fixedPayment) + '</b><br>Taxa equivalente no prazo: <b class="text-gold-400">' + Number(fixedCalc.periodRate || 0).toFixed(2) + '%</b> (~' + impliedDaily.toFixed(4) + '% ao dia)<br>1ª parcela: juros ' + Utils.fmtMoney(first.interest) + ' + amortização ' + Utils.fmtMoney(first.principal) + '<br>Total das parcelas: ' + Utils.fmtMoney(fixedCalc.total) + ' | Juros total: ' + Utils.fmtMoney(fixedCalc.total - amount);
+              }
+            }
           } else {
             const calc = Finance.calcInstallmentAmount(amount, periodRate, freq, n);
             const first = calc.schedule[0];
             preview.innerHTML = '<b>Simulação Price:</b><br>Parcela fixa: <b class="text-gold-400">' + Utils.fmtMoney(calc.installmentAmount) + '</b><br>1ª parcela: juros ' + Utils.fmtMoney(first.interest) + ' + amortização ' + Utils.fmtMoney(first.principal) + '<br>Total estimado: ' + Utils.fmtMoney(calc.total);
           }
         } else {
-          preview.textContent = calcMode === 'proporcional' ? 'Informe o valor para ver a simulação proporcional.' : 'Informe valor e número de parcelas para ver a simulação Price.';
+          preview.textContent = calcMode === 'proporcional' ? 'Informe o valor para ver a simulação proporcional.' : calcMode === 'parcela_fixa' ? 'Informe valor, quantidade de parcelas e valor da parcela fixa.' : 'Informe valor e número de parcelas para ver a simulação Price.';
         }
       }
     }
@@ -1665,6 +2023,11 @@
       Finance.ensureInstallmentsForLoan(loan);
       const installments = DB.getInstallmentsByLoan(loan.loan_id);
       const payments = DB.getPaymentsByLoan(loan.loan_id);
+      // Total recebido precisa ser SEMPRE a soma real dos pagamentos lançados,
+      // não a soma dos campos internos de principal/juros da parcela.
+      // Esses campos podem mudar quando há sincronização, desconto nas últimas parcelas
+      // ou ajustes retroativos, mas o dinheiro recebido é o histórico de pagamentos.
+      const totalPaymentReceived = payments.reduce((s, p) => s + Number(p.payment_amount || 0), 0);
 
       let totalRealDebt = 0, totalPrincipalOpen = 0, totalInterestOpen = 0, totalPaidPrincipal = 0, totalPaidPeriodInterest = 0, totalPaidExtraInterest = 0, totalPaidPenalty = 0;
       installments.forEach(inst => {
@@ -1696,10 +2059,11 @@
           </div>
           <div class="grid grid-cols-2 gap-2 mt-2 text-center text-sm">
             <div class="stat-card"><p class="text-xs text-slate-400">Juros/Multa Pagos</p><p class="font-bold text-green-400">${Utils.fmtMoney(totalPaidPeriodInterest + totalPaidExtraInterest + totalPaidPenalty)}</p></div>
-            <div class="stat-card"><p class="text-xs text-slate-400">Total Recebido</p><p class="font-bold text-green-400">${Utils.fmtMoney(totalPaidPrincipal + totalPaidPeriodInterest + totalPaidExtraInterest + totalPaidPenalty)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Total Recebido</p><p class="font-bold text-green-400">${Utils.fmtMoney(totalPaymentReceived)}</p><p class="text-[10px] text-slate-500 mt-1">Soma dos pagamentos recebidos</p></div>
           </div>
           <div class="flex gap-2 mt-3">
             <button onclick="activeModal={type:'message',loanKey:'${loan.loan_id}'};render()" class="btn-outline flex-1 py-2 text-sm flex items-center justify-center gap-1"><i data-lucide="message-circle" class="w-4 h-4"></i> Msg</button>
+            <button onclick="confirmAction={type:'recalcLoan',loanKey:'${loan.loan_id}',clientName:'${DB.getClientById(loan.client_id)?.name || 'Cliente'}',amount:'${Utils.fmtMoney(loan.amount)}'};render()" class="btn-outline flex-1 py-2 text-sm flex items-center justify-center gap-1"><i data-lucide="refresh-cw" class="w-4 h-4"></i> Sincronizar histórico</button>
             <button onclick="confirmAction={type:'deleteLoan',id:'${loan.id}',loanKey:'${loan.loan_id}',clientName:'${DB.getClientById(loan.client_id)?.name || 'Cliente'}',amount:'${Utils.fmtMoney(loan.amount)}'};render()" class="btn-danger py-2 px-3 text-sm flex items-center gap-1"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
           </div>
           ${installments.some(i => i.status_inst !== 'pago') ? `<button type="button" onclick="activeModal={type:'payment',instId:'${installments.find(i => i.status_inst !== 'pago').id}'};render();" class="btn-gold w-full py-3 mt-3 text-sm font-bold flex items-center justify-center gap-2"><i data-lucide="credit-card" class="w-4 h-4"></i> Registrar pagamento da próxima parcela</button>` : ''}
@@ -1716,6 +2080,7 @@
                 <p class="text-xs text-slate-400">Venc: ${Utils.fmtDate(inst.due_date)} ${isOverdue ? `(${det.daysLate}d atraso)` : ''}</p>
                 <p class="text-xs text-slate-500">Principal Pago: ${Utils.fmtMoney(Finance.getPaidTotal(inst, 'principal'))} | Principal Pendente: ${Utils.fmtMoney(det.principal)}</p>
                 <p class="text-xs text-slate-500">Juros Pagos: ${Utils.fmtMoney(Finance.getPaidTotal(inst, 'periodInterest') + Finance.getPaidTotal(inst, 'extraInterest'))} | Juros Pendentes: ${Utils.fmtMoney(det.totalInterestPending)}</p>
+                ${Number(inst.discount_applied || 0) > 0 ? `<p class="text-xs text-green-300">Desconto aplicado por pagamento a mais: ${Utils.fmtMoney(inst.discount_applied)}</p>` : ''}
                 ${!isPaid && det.accumulatedPenalty > 0 ? `<p class="text-xs text-red-300">Multa: ${Utils.fmtMoney(det.accumulatedPenalty)} | Multa Paga: ${Utils.fmtMoney(Finance.getPaidTotal(inst, 'penalty'))}</p>` : ''}
               </div>
               <div class="flex flex-row sm:flex-col items-stretch sm:items-end gap-2 w-full sm:w-auto">
@@ -1744,6 +2109,7 @@
       const allInst = DB.getInstallments();
       const payments = DB.getPayments();
       const totalLent = loans.reduce((s,l) => s + Number(l.amount || 0), 0);
+      // Recebido geral = soma real de todos os pagamentos recebidos registrados.
       const totalReceived = payments.reduce((s,p) => s + Number(p.payment_amount || 0), 0);
       const overdueInst = allInst.filter(i => i.status_inst !== 'pago' && Utils.daysDiff(Utils.today(), i.due_date) > 0);
       const totalOverdue = overdueInst.reduce((s,i) => s + Finance.calcInstallmentDetails(i).totalDue, 0);
@@ -1849,6 +2215,7 @@
       const todayTotal = todayRows.reduce((s,r) => s + r.amount, 0);
       const intervalForecastTotal = intervalRows.reduce((s,r) => s + r.amount, 0);
       const intervalPayments = payments.filter(p => (p.payment_date || '') >= selectedStart && (p.payment_date || '') <= selectedEnd);
+      // Recebido no intervalo = soma real dos pagamentos com data dentro do calendário escolhido.
       const intervalReceivedTotal = intervalPayments.reduce((s,p) => s + Number(p.payment_amount || 0), 0);
 
       return `<div class="fade-in">
@@ -2142,6 +2509,7 @@
                 <p class="text-xs text-slate-400">Venc: ${Utils.fmtDate(inst.due_date)} ${isOverdue?'('+det.daysLate+'d)':''}</p>
                 <p class="text-xs text-slate-500">Principal Pago: ${Utils.fmtMoney(Finance.getPaidTotal(inst, 'principal'))} | Principal Pendente: ${Utils.fmtMoney(det.principal)}</p>
                 <p class="text-xs text-slate-500">Juros Pagos: ${Utils.fmtMoney(Finance.getPaidTotal(inst, 'periodInterest') + Finance.getPaidTotal(inst, 'extraInterest'))} | Juros Pendentes: ${Utils.fmtMoney(det.totalInterestPending)}</p>
+                ${Number(inst.discount_applied || 0) > 0 ? `<p class="text-xs text-green-300">Desconto aplicado por pagamento a mais: ${Utils.fmtMoney(inst.discount_applied)}</p>` : ''}
                 ${!isPaid && det.accumulatedPenalty > 0 ? `<p class="text-xs text-red-300">Multa: ${Utils.fmtMoney(det.accumulatedPenalty)} | Multa Paga: ${Utils.fmtMoney(Finance.getPaidTotal(inst, 'penalty'))}</p>` : ''}
               </div>
               <div class="flex flex-col items-end gap-2">
@@ -2219,7 +2587,7 @@
           <input type="date" class="input-field mb-2" id="pay-date" value="${Utils.today()}" required>
           <label class="text-xs text-slate-400">Nova data da próxima parcela / novo vencimento</label>
           <input type="date" class="input-field mb-1" id="pay-next-due">
-          <p class="text-xs text-slate-500 mb-3">Informe a nova data. Se deixar em branco, o sistema usa o próximo prazo automático do empréstimo e recalcula os juros sobre o principal real restante.</p>
+          <p class="text-xs text-slate-500 mb-3">Tabela Price e Parcela Fixa: quitar parcela não muda a data dela. Pagamento acima do devido vira desconto nas últimas parcelas, de trás para frente. Saldo corrido proporcional: a nova data cria o próximo ciclo do saldo restante.</p>
           <div class="flex gap-2">
             <button type="button" onclick="activeModal=null;document.getElementById('payment-modal')?.remove()" class="btn-outline py-2 flex-1">Cancelar</button>
             <button type="submit" class="btn-gold py-2 flex-1">Confirmar</button>
@@ -2339,6 +2707,18 @@
           <div class="flex gap-2">
             <button onclick="confirmAction=null;document.getElementById('confirm-modal')?.remove()" class="btn-outline py-2 flex-1">Cancelar</button>
             <button onclick="Crud.deleteLoan('${confirmAction.id}','${confirmAction.loanKey}');confirmAction=null;document.getElementById('confirm-modal')?.remove()" class="btn-danger py-2 flex-1">Excluir</button>
+          </div>
+        </div>`;
+      } else if (confirmAction.type === 'recalcLoan') {
+        content = `<div class="modal-content fade-in text-center max-w-sm">
+          <i data-lucide="refresh-cw" class="w-12 h-12 text-gold-400 mx-auto mb-3"></i>
+          <h3 class="font-semibold mb-2">Sincronizar histórico?</h3>
+          <p class="text-sm text-slate-300 mb-1">${confirmAction.clientName}</p>
+          <p class="text-lg font-bold text-gold-400 mb-2">${confirmAction.amount}</p>
+          <p class="text-xs text-slate-400 mb-4">O sistema vai apenas atualizar o resumo das parcelas usando os pagamentos já registrados. Não altera vencimentos, não apaga valores pagos e não recria parcelas.</p>
+          <div class="flex gap-2">
+            <button onclick="confirmAction=null;document.getElementById('confirm-modal')?.remove()" class="btn-outline py-2 flex-1">Cancelar</button>
+            <button onclick="Crud.recalculateLoanHistory('${confirmAction.loanKey}');document.getElementById('confirm-modal')?.remove()" class="btn-gold py-2 flex-1">Sincronizar</button>
           </div>
         </div>`;
       } else if (confirmAction.type === 'deletePayment') {
