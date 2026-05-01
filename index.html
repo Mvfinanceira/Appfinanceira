@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>MV Financeira - Sistema de Empréstimos</title>
   <script src="https://cdn.tailwindcss.com/3.4.17"></script>
-  <script src="https://cdn.jsdelivr.net/npm/lucide@0.26""3.0/dist/umd/lucide.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lucide@0.263.0/dist/umd/lucide.min.js"></script>
   <!-- Firebase compatível com HTML simples/GitHub Pages -->
   <script src="https://www.gstatic.com/firebasejs/12.12.1/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/12.12.1/firebase-firestore-compat.js"></script>
@@ -1806,7 +1806,7 @@
                 <p class="text-xs text-slate-400">${c.days} dias • Lucro: ${Utils.fmtMoney(c.profit)} • Saldo: ${Utils.fmtMoney(c.total)}</p>
                 ${ap.notes ? `<p class="text-xs text-slate-500">Obs: ${ap.notes}</p>` : ''}
               </div>
-              <button onclick="confirmAction={type:'deleteInvestorAporte',id:'${ap.id}',amount:'${Utils.fmtMoney(ap.amount)}'};render()" class="btn-danger py-1 px-2 text-xs"><i data-lucide="trash-2" class="w-3 h-3"></i></button>
+              <button onclick="confirmAction={type:'deleteInvestorAporte',id:'${ap.id}',amount:'${Utils.fmtMoney(ap.amount)}'};render()" class="btn-danger py-1 px-2 text-xs flex items-center gap-1"><i data-lucide="trash-2" class="w-3 h-3"></i> Excluir</button>
             </div>
           </div>`;
         }).join('')}
@@ -1818,7 +1818,7 @@
               <p class="text-sm font-medium">${Utils.fmtMoney(p.amount)} • ${Utils.fmtDate(p.date)}</p>
               ${p.notes ? `<p class="text-xs text-slate-500">Obs: ${p.notes}</p>` : ''}
             </div>
-            <button onclick="confirmAction={type:'deleteInvestorPayment',id:'${p.id}',amount:'${Utils.fmtMoney(p.amount)}'};render()" class="btn-danger py-1 px-2 text-xs"><i data-lucide="trash-2" class="w-3 h-3"></i></button>
+            <button onclick="confirmAction={type:'deleteInvestorPayment',id:'${p.id}',amount:'${Utils.fmtMoney(p.amount)}'};render()" class="btn-danger py-1 px-2 text-xs flex items-center gap-1"><i data-lucide="trash-2" class="w-3 h-3"></i> Excluir</button>
           </div>
         </div>`).join('')}
       </div>`;
@@ -2052,7 +2052,7 @@
             <span class="badge ${loan.status_loan==='ativo'?'badge-active':'badge-paid'}">${loan.status_loan}</span>
           </div>
           <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-sm">
-            <div class="stat-card"><p class="text-xs text-slate-400">Saldo Atual</p><p class="font-bold text-red-400">${Utils.fmtMoney(totalRealDebt)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Valor Devido</p><p class="font-bold text-red-400">${Utils.fmtMoney(totalRealDebt)}</p></div>
             <div class="stat-card"><p class="text-xs text-slate-400">Principal Aberto</p><p class="font-bold text-gold-400">${Utils.fmtMoney(totalPrincipalOpen)}</p></div>
             <div class="stat-card"><p class="text-xs text-slate-400">Juros/Multa Aberto</p><p class="font-bold text-yellow-400">${Utils.fmtMoney(totalInterestOpen)}</p></div>
             <div class="stat-card"><p class="text-xs text-slate-400">Principal Pago</p><p class="font-bold text-green-400">${Utils.fmtMoney(totalPaidPrincipal)}</p></div>
@@ -2064,7 +2064,7 @@
           <div class="flex gap-2 mt-3">
             <button onclick="activeModal={type:'message',loanKey:'${loan.loan_id}'};render()" class="btn-outline flex-1 py-2 text-sm flex items-center justify-center gap-1"><i data-lucide="message-circle" class="w-4 h-4"></i> Msg</button>
             <button onclick="confirmAction={type:'recalcLoan',loanKey:'${loan.loan_id}',clientName:'${DB.getClientById(loan.client_id)?.name || 'Cliente'}',amount:'${Utils.fmtMoney(loan.amount)}'};render()" class="btn-outline flex-1 py-2 text-sm flex items-center justify-center gap-1"><i data-lucide="refresh-cw" class="w-4 h-4"></i> Sincronizar histórico</button>
-            <button onclick="confirmAction={type:'deleteLoan',id:'${loan.id}',loanKey:'${loan.loan_id}',clientName:'${DB.getClientById(loan.client_id)?.name || 'Cliente'}',amount:'${Utils.fmtMoney(loan.amount)}'};render()" class="btn-danger py-2 px-3 text-sm flex items-center gap-1"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+            <button onclick="confirmAction={type:'deleteLoan',id:'${loan.id}',loanKey:'${loan.loan_id}',clientName:'${DB.getClientById(loan.client_id)?.name || 'Cliente'}',amount:'${Utils.fmtMoney(loan.amount)}'};render()" class="btn-danger py-2 px-3 text-sm flex items-center gap-1"><i data-lucide="trash-2" class="w-4 h-4"></i> Excluir</button>
           </div>
           ${installments.some(i => i.status_inst !== 'pago') ? `<button type="button" onclick="activeModal={type:'payment',instId:'${installments.find(i => i.status_inst !== 'pago').id}'};render();" class="btn-gold w-full py-3 mt-3 text-sm font-bold flex items-center justify-center gap-2"><i data-lucide="credit-card" class="w-4 h-4"></i> Registrar pagamento da próxima parcela</button>` : ''}
         </div>
@@ -2098,7 +2098,7 @@
               <p class="text-xs text-slate-400 capitalize">${p.payment_type === 'jurosMulta' ? 'Juros + Multa' : p.payment_type === 'integral' ? 'Integral' : 'Parcial'}</p>
               <p class="text-xs text-slate-500 mt-1">Principal: ${Utils.fmtMoney(p.paid_to_principal || 0)} • J. Período: ${Utils.fmtMoney(p.paid_to_period_interest || 0)} • J. Extras: ${Utils.fmtMoney(p.paid_to_extra_interest || 0)} • Multa: ${Utils.fmtMoney(p.paid_to_penalty || 0)}</p>
             </div>
-            <button onclick="confirmAction={type:'deletePayment',id:'${p.id}',amount:'${Utils.fmtMoney(p.payment_amount)}'};render()" class="btn-danger py-1 px-2 text-xs"><i data-lucide="trash-2" class="w-3 h-3"></i></button>
+            <button onclick="confirmAction={type:'deletePayment',id:'${p.id}',amount:'${Utils.fmtMoney(p.payment_amount)}'};render()" class="btn-danger py-1 px-2 text-xs flex items-center gap-1"><i data-lucide="trash-2" class="w-3 h-3"></i> Excluir</button>
           </div>
         </div>`).join('')}
       </div>`;
@@ -2492,7 +2492,7 @@
             <span class="badge ${loan.status_loan==='ativo'?'badge-active':'badge-paid'}">${loan.status_loan}</span>
           </div>
           <div class="grid grid-cols-2 gap-2 text-center mb-3">
-            <div class="stat-card"><p class="text-xs text-slate-400">Saldo Atual</p><p class="text-sm font-bold text-red-400">${Utils.fmtMoney(loanTotalRealDebt)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Valor Devido</p><p class="text-sm font-bold text-red-400">${Utils.fmtMoney(loanTotalRealDebt)}</p></div>
             <div class="stat-card"><p class="text-xs text-slate-400">Principal Aberto</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(loanPrincipalOpen)}</p></div>
             <div class="stat-card"><p class="text-xs text-slate-400">Principal Pago</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(loanTotalPaidPrincipal)}</p></div>
             <div class="stat-card"><p class="text-xs text-slate-400">Juros/Multa Pago</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(loanTotalPaidInterest)}</p></div>
@@ -2531,7 +2531,7 @@
         </header>
         <div class="flex-1 overflow-auto p-4">
           <div class="grid grid-cols-2 gap-2 mb-4">
-            <div class="stat-card text-center"><p class="text-xs text-slate-400">Saldo Atual</p><p class="text-sm font-bold text-red-400">${Utils.fmtMoney(totalDebt)}</p></div>
+            <div class="stat-card text-center"><p class="text-xs text-slate-400">Valor Devido</p><p class="text-sm font-bold text-red-400">${Utils.fmtMoney(totalDebt)}</p></div>
             <div class="stat-card text-center"><p class="text-xs text-slate-400">Principal Aberto</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(totalPrincipalOpen)}</p></div>
             <div class="stat-card text-center"><p class="text-xs text-slate-400">Total Pago</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(totalPaidAll)}</p></div>
             <div class="stat-card text-center"><p class="text-xs text-slate-400">Atraso</p><p class="text-sm font-bold text-yellow-400">${overdueCount}</p></div>
@@ -2662,7 +2662,7 @@
           ? `⚠️ Você possui ${overdueCount} parcela(s) / cobrança(s) em atraso.`
           : '✅ Não consta atraso neste momento.';
 
-      const msg = `Olá ${client?.name || ''}! 👋\n\nSegue o resumo atualizado do seu empréstimo na ${bizName}:\n\n🏦 DADOS DO EMPRÉSTIMO\n━━━━━━━━━━━━━━━━━━━━━━━━\nTipo de cálculo: ${calcLabel}\nValor contratado: ${Utils.fmtMoney(loan.amount)}\nTaxa diária base: ${dailyRate.toFixed(2).replace('.', ',')}% ao dia\nPrazo de cobrança: ${periodLabel}\n\n📊 SITUAÇÃO ATUAL\n━━━━━━━━━━━━━━━━━━━━━━━━\n${situationLine}\nSaldo atualizado hoje: ${Utils.fmtMoney(currentDebt)}\nPrincipal em aberto: ${Utils.fmtMoney(principalOpen)}\nJuros/Multa em aberto: ${Utils.fmtMoney(interestOpen + penaltyOpen)}\nTotal em atraso: ${Utils.fmtMoney(overdueAmount)}\n\n✅ VALORES JÁ PAGOS\n━━━━━━━━━━━━━━━━━━━━━━━━\nTotal recebido: ${Utils.fmtMoney(totalReceived)}\nPrincipal pago: ${Utils.fmtMoney(totalPaidPrincipal)}\nJuros/Multa pagos: ${Utils.fmtMoney(totalPaidInterestPenalty)}\n${nextDetails}${details ? '\n📄 DETALHAMENTO\n' + details : ''}\n💰 FORMA DE PAGAMENTO\n━━━━━━━━━━━━━━━━━━━━━━━━\nPIX: ${pix}\n\nFavor realizar o pagamento conforme combinado. Após pagar, envie o comprovante para baixa no sistema.\n\nAtenciosamente,\n${bizName}`;
+      const msg = `Olá ${client?.name || ''}! 👋\n\nSegue o resumo atualizado do seu empréstimo na ${bizName}:\n\n🏦 DADOS DO EMPRÉSTIMO\n━━━━━━━━━━━━━━━━━━━━━━━━\nTipo de cálculo: ${calcLabel}\nValor contratado: ${Utils.fmtMoney(loan.amount)}\nTaxa diária base: ${dailyRate.toFixed(2).replace('.', ',')}% ao dia\nPrazo de cobrança: ${periodLabel}\n\n📊 SITUAÇÃO ATUAL\n━━━━━━━━━━━━━━━━━━━━━━━━\n${situationLine}\nValor devidoizado hoje: ${Utils.fmtMoney(currentDebt)}\nPrincipal em aberto: ${Utils.fmtMoney(principalOpen)}\nJuros/Multa em aberto: ${Utils.fmtMoney(interestOpen + penaltyOpen)}\nTotal em atraso: ${Utils.fmtMoney(overdueAmount)}\n\n✅ VALORES JÁ PAGOS\n━━━━━━━━━━━━━━━━━━━━━━━━\nTotal recebido: ${Utils.fmtMoney(totalReceived)}\nPrincipal pago: ${Utils.fmtMoney(totalPaidPrincipal)}\nJuros/Multa pagos: ${Utils.fmtMoney(totalPaidInterestPenalty)}\n${nextDetails}${details ? '\n📄 DETALHAMENTO\n' + details : ''}\n💰 FORMA DE PAGAMENTO\n━━━━━━━━━━━━━━━━━━━━━━━━\nPIX: ${pix}\n\nFavor realizar o pagamento conforme combinado. Após pagar, envie o comprovante para baixa no sistema.\n\nAtenciosamente,\n${bizName}`;
 
       const safeMsg = msg.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const div = document.createElement('div');
