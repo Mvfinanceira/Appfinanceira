@@ -489,6 +489,159 @@
         });
         return applied;
       },
+
+      getOpenFutureInstallmentValue: (inst, referenceDate = null) => {
+        const det = Finance.calcInstallmentDetails(inst, referenceDate || Utils.today());
+        return Finance.round2(Number(det.principal || 0) + Number(det.totalInterestPending || 0) + Number(det.accumulatedPenalty || 0));
+      },
+      reduceInstallmentByFutureValue: (inst, futureValueToReduce) => {
+        const totalFuture = Finance.getOpenFutureInstallmentValue(inst, Utils.today());
+        const reduction = Math.min(Finance.round2(futureValueToReduce), totalFuture);
+        if (reduction <= 0.009 || totalFuture <= 0.009) return { principal: Number(inst.principal || 0), interest: Number(inst.interest || 0), installment_amount: Number(inst.installment_amount || 0) };
+        const principal = Number(inst.principal || 0);
+        const interest = Number(inst.interest || 0);
+        const base = Math.max(0.01, principal + interest);
+        const principalReduce = Math.min(principal, Finance.round2(reduction * (principal / base)));
+        const interestReduce = Math.min(interest, Finance.round2(reduction - principalReduce));
+        let newPrincipal = Finance.round2(principal - principalReduce);
+        let newInterest = Finance.round2(interest - interestReduce);
+        let leftover = Finance.round2(reduction - principalReduce - interestReduce);
+        if (leftover > 0.009) {
+          const extraPrincipal = Math.min(newPrincipal, leftover);
+          newPrincipal = Finance.round2(newPrincipal - extraPrincipal);
+          leftover = Finance.round2(leftover - extraPrincipal);
+        }
+        if (leftover > 0.009) {
+          const extraInterest = Math.min(newInterest, leftover);
+          newInterest = Finance.round2(newInterest - extraInterest);
+        }
+        return {
+          principal: newPrincipal,
+          interest: newInterest,
+          installment_amount: Finance.round2(newPrincipal + newInterest)
+        };
+      },
+      applyAnticipationToFutureInstallments: (loanKey, amountPaid, paymentDate) => {
+        const loan = DB.getLoanByKey(loanKey);
+        if (!loan) return { ok:false, message:'Empréstimo não encontrado', parcelasAfetadas:[], valorRecebido:0, descontoAntecipacao:0, valorBaixadoTotal:0, saldoNaoAplicado:Number(amountPaid||0) };
+        if (Finance.isProportionalLoan(loan)) return { ok:false, message:'Antecipação por parcelas futuras vale apenas para contratos parcelados.', parcelasAfetadas:[], valorRecebido:0, descontoAntecipacao:0, valorBaixadoTotal:0, saldoNaoAplicado:Number(amountPaid||0) };
+        const taxaDiariaDecimal = Math.max(0, Number(loan.daily_rate_used ?? loan.late_daily_rate ?? 0) / 100);
+        const payDate = paymentDate || Utils.today();
+        let saldo = Finance.round2(amountPaid);
+        let valorRecebidoAplicadoTotal = 0;
+        let descontoTotal = 0;
+        let baixadoTotal = 0;
+        const afetadas = [];
+        const futuras = DB.getInstallmentsByLoan(loanKey)
+          .filter(inst => inst.status_inst !== 'pago' && Utils.daysDiff(inst.due_date, payDate) > 0)
+          .sort((a,b) => {
+            const da = String(a.due_date || '');
+            const db = String(b.due_date || '');
+            if (da !== db) return db.localeCompare(da);
+            return Number(b.number || 0) - Number(a.number || 0);
+          });
+
+        futuras.forEach(inst => {
+          if (saldo <= 0.009) return;
+          const statusAnterior = inst.status_inst || 'pendente';
+          const dias = Math.max(0, Utils.daysDiff(inst.due_date, payDate));
+          if (dias <= 0) return;
+          const valorFuturoParcela = Finance.getOpenFutureInstallmentValue(inst, payDate);
+          if (valorFuturoParcela <= 0.009) return;
+          const fator = Math.pow(1 + taxaDiariaDecimal, dias);
+          const valorPresente = Finance.round2(valorFuturoParcela / fator);
+          if (valorPresente <= 0.009) return;
+
+          if (saldo + 0.009 >= valorPresente) {
+            const valorRecebidoAplicado = valorPresente;
+            const desconto = Math.max(0, Finance.round2(valorFuturoParcela - valorPresente));
+            const novoStatus = 'quitada_antecipada';
+            DB.updateInstallment(inst.id, {
+              principal: 0,
+              interest: 0,
+              installment_amount: 0,
+              status_inst: 'pago',
+              status_antecipacao: novoStatus,
+              antecipacao_valor_recebido: Finance.round2(Number(inst.antecipacao_valor_recebido || 0) + valorRecebidoAplicado),
+              antecipacao_desconto: Finance.round2(Number(inst.antecipacao_desconto || 0) + desconto),
+              antecipacao_baixa_total: Finance.round2(Number(inst.antecipacao_baixa_total || 0) + valorFuturoParcela),
+              antecipacao_data: payDate,
+              discount_applied: Finance.round2(Number(inst.discount_applied || 0) + desconto),
+              original_principal_before_discount: Number(inst.original_principal_before_discount ?? inst.principal ?? 0),
+              original_interest_before_discount: Number(inst.original_interest_before_discount ?? inst.interest ?? 0),
+              original_installment_amount_before_discount: Number(inst.original_installment_amount_before_discount ?? inst.installment_amount ?? 0)
+            });
+            saldo = Finance.round2(saldo - valorPresente);
+            valorRecebidoAplicadoTotal = Finance.round2(valorRecebidoAplicadoTotal + valorRecebidoAplicado);
+            descontoTotal = Finance.round2(descontoTotal + desconto);
+            baixadoTotal = Finance.round2(baixadoTotal + valorFuturoParcela);
+            afetadas.push({
+              numeroParcela: inst.number,
+              installmentId: inst.id,
+              valorOriginalParcela: Finance.round2(valorFuturoParcela),
+              valorPresenteCalculado: valorPresente,
+              valorRecebidoAplicado: valorRecebidoAplicado,
+              descontoAplicado: desconto,
+              valorFuturoAbatido: Finance.round2(valorFuturoParcela),
+              statusAnterior,
+              statusNovo: novoStatus,
+              dataVencimento: inst.due_date,
+              diasAntecipados: dias
+            });
+          } else {
+            const valorRecebidoAplicado = saldo;
+            const valorFuturoAbatido = Math.min(valorFuturoParcela, Finance.round2(valorRecebidoAplicado * fator));
+            const desconto = Math.max(0, Finance.round2(valorFuturoAbatido - valorRecebidoAplicado));
+            const reduced = Finance.reduceInstallmentByFutureValue(inst, valorFuturoAbatido);
+            const novoStatus = reduced.installment_amount <= 0.009 ? 'quitada_antecipada' : 'parcialmente_antecipada';
+            DB.updateInstallment(inst.id, {
+              ...reduced,
+              status_inst: novoStatus === 'quitada_antecipada' ? 'pago' : 'pendente',
+              status_antecipacao: novoStatus,
+              antecipacao_valor_recebido: Finance.round2(Number(inst.antecipacao_valor_recebido || 0) + valorRecebidoAplicado),
+              antecipacao_desconto: Finance.round2(Number(inst.antecipacao_desconto || 0) + desconto),
+              antecipacao_baixa_total: Finance.round2(Number(inst.antecipacao_baixa_total || 0) + valorFuturoAbatido),
+              antecipacao_data: payDate,
+              discount_applied: Finance.round2(Number(inst.discount_applied || 0) + desconto),
+              original_principal_before_discount: Number(inst.original_principal_before_discount ?? inst.principal ?? 0),
+              original_interest_before_discount: Number(inst.original_interest_before_discount ?? inst.interest ?? 0),
+              original_installment_amount_before_discount: Number(inst.original_installment_amount_before_discount ?? inst.installment_amount ?? 0)
+            });
+            saldo = 0;
+            valorRecebidoAplicadoTotal = Finance.round2(valorRecebidoAplicadoTotal + valorRecebidoAplicado);
+            descontoTotal = Finance.round2(descontoTotal + desconto);
+            baixadoTotal = Finance.round2(baixadoTotal + valorFuturoAbatido);
+            afetadas.push({
+              numeroParcela: inst.number,
+              installmentId: inst.id,
+              valorOriginalParcela: Finance.round2(valorFuturoParcela),
+              valorPresenteCalculado: valorPresente,
+              valorRecebidoAplicado: valorRecebidoAplicado,
+              descontoAplicado: desconto,
+              valorFuturoAbatido: Finance.round2(valorFuturoAbatido),
+              statusAnterior,
+              statusNovo: novoStatus,
+              dataVencimento: inst.due_date,
+              diasAntecipados: dias
+            });
+          }
+        });
+
+        const updated = DB.getInstallmentsByLoan(loanKey);
+        const allPaid = updated.length > 0 && updated.every(i => i.status_inst === 'pago');
+        DB.updateLoan(loan.id, { status_loan: allPaid ? 'quitado' : 'ativo', last_anticipation_at: new Date().toISOString() });
+        return {
+          ok: afetadas.length > 0,
+          message: afetadas.length > 0 ? 'Antecipação aplicada com desconto nas parcelas futuras.' : 'Nenhuma parcela futura em aberto para antecipar.',
+          valorRecebido: Finance.round2(Number(amountPaid || 0)),
+          valorRecebidoAplicado: Finance.round2(valorRecebidoAplicadoTotal),
+          descontoAntecipacao: Finance.round2(descontoTotal),
+          valorBaixadoTotal: Finance.round2(baixadoTotal),
+          saldoNaoAplicado: Finance.round2(saldo),
+          modoAplicacao: 'de_tras_para_frente',
+          parcelasAfetadas: afetadas
+        };
+      },
       rebuildNonProportionalLoanFromPayments: (loanKey) => {
         const loan = DB.getLoanByKey(loanKey);
         if (!loan) return false;
@@ -533,6 +686,11 @@
             total_paid_penalty: 0,
             last_payment_date: '',
             status_inst: 'pendente',
+            status_antecipacao: '',
+            antecipacao_valor_recebido: 0,
+            antecipacao_desconto: 0,
+            antecipacao_baixa_total: 0,
+            antecipacao_data: '',
             discount_applied: 0,
             original_principal_before_discount: basePrincipal,
             original_interest_before_discount: baseInterest,
@@ -541,11 +699,29 @@
           });
         });
 
-        // 2) Reaplica os pagamentos existentes em ordem de data e recalcula as sobras/descontos.
+        // 2) Reaplica os pagamentos existentes em ordem de data.
+        // Pagamento normal NÃO vira antecipação. Antecipação só ocorre quando payment_type = antecipacao_parcelas.
         payments.forEach(pay => {
+          const paymentDate = pay.payment_date || Utils.today();
+          if (pay.payment_type === 'antecipacao_parcelas') {
+            const result = Finance.applyAnticipationToFutureInstallments(loanKey, Number(pay.payment_amount || 0), paymentDate);
+            DB.updatePayment(pay.id, {
+              antecipacao_discount_total: Finance.round2(result.descontoAntecipacao || 0),
+              antecipacao_total_baixado: Finance.round2(result.valorBaixadoTotal || 0),
+              antecipacao_valor_recebido_aplicado: Finance.round2(result.valorRecebidoAplicado || 0),
+              antecipacao_saldo_nao_aplicado: Finance.round2(result.saldoNaoAplicado || 0),
+              parcelas_afetadas: result.parcelasAfetadas || [],
+              paid_extra_to_future_installments: 0,
+              paid_to_principal: 0,
+              paid_to_period_interest: 0,
+              paid_to_extra_interest: 0,
+              paid_to_penalty: 0
+            });
+            return;
+          }
+
           const currentInst = DB.getInstallmentById(pay.installment_id_pay);
           if (!currentInst) return;
-          const paymentDate = pay.payment_date || Utils.today();
           const det = Finance.calcInstallmentDetails(currentInst, paymentDate);
           let remaining = Number(pay.payment_amount || 0);
           let paidToPeriodInterest = Math.min(det.periodInterestPending, remaining); remaining = Finance.round2(remaining - paidToPeriodInterest);
@@ -573,24 +749,14 @@
           patch.status_inst = detAfter.totalDue <= 0.009 ? 'pago' : 'pendente';
           DB.updateInstallment(currentInst.id, patch);
 
-          if (remaining > 0.009) {
-            const applied = Finance.applyOverpaymentToLastInstallments(loanKey, currentInst.id, remaining);
-            DB.updatePayment(pay.id, {
-              paid_to_principal: Finance.round2(paidToPrincipal),
-              paid_to_period_interest: Finance.round2(paidToPeriodInterest),
-              paid_to_extra_interest: Finance.round2(paidToExtraInterest),
-              paid_to_penalty: Finance.round2(paidToPenalty),
-              paid_extra_to_future_installments: Finance.round2(applied)
-            });
-          } else {
-            DB.updatePayment(pay.id, {
-              paid_to_principal: Finance.round2(paidToPrincipal),
-              paid_to_period_interest: Finance.round2(paidToPeriodInterest),
-              paid_to_extra_interest: Finance.round2(paidToExtraInterest),
-              paid_to_penalty: Finance.round2(paidToPenalty),
-              paid_extra_to_future_installments: 0
-            });
-          }
+          DB.updatePayment(pay.id, {
+            paid_to_principal: Finance.round2(paidToPrincipal),
+            paid_to_period_interest: Finance.round2(paidToPeriodInterest),
+            paid_to_extra_interest: Finance.round2(paidToExtraInterest),
+            paid_to_penalty: Finance.round2(paidToPenalty),
+            paid_extra_to_future_installments: 0,
+            normal_excess_unallocated: Finance.round2(Math.max(0, remaining))
+          });
         });
 
         const updatedInstallments = DB.getInstallmentsByLoan(loanKey);
@@ -1113,6 +1279,37 @@
         const isProportional = Finance.isProportionalLoan(loanForDue);
         const isInstallmentMode = !isProportional;
 
+        if (type === 'antecipacao_parcelas') {
+          if (!isInstallmentMode) return Utils.toast('Antecipação de parcelas futuras só vale para contratos parcelados.', 'error');
+          const result = Finance.applyAnticipationToFutureInstallments(inst.loan_id_inst, amount, paymentDate);
+          if (!result.ok) return Utils.toast(result.message || 'Nenhuma parcela futura para antecipar.', 'error');
+          DB.addPayment({
+            id: Utils.uid(),
+            type: 'payment',
+            payment_id: Utils.uid(),
+            installment_id_pay: inst.id,
+            loan_id_pay: inst.loan_id_inst,
+            payment_amount: amount,
+            payment_date: paymentDate,
+            payment_type: 'antecipacao_parcelas',
+            modoAplicacao: 'de_tras_para_frente',
+            observacao: 'Antecipação de parcelas futuras com desconto a valor presente, aplicada de trás para frente.',
+            antecipacao_discount_total: Finance.round2(result.descontoAntecipacao || 0),
+            antecipacao_total_baixado: Finance.round2(result.valorBaixadoTotal || 0),
+            antecipacao_valor_recebido_aplicado: Finance.round2(result.valorRecebidoAplicado || 0),
+            antecipacao_saldo_nao_aplicado: Finance.round2(result.saldoNaoAplicado || 0),
+            parcelas_afetadas: result.parcelasAfetadas || [],
+            paid_to_principal: 0,
+            paid_to_period_interest: 0,
+            paid_to_extra_interest: 0,
+            paid_to_penalty: 0
+          });
+          Utils.toast('Antecipação aplicada: desconto ' + Utils.fmtMoney(result.descontoAntecipacao) + ' | baixa total ' + Utils.fmtMoney(result.valorBaixadoTotal), 'success');
+          activeModal = null;
+          render();
+          return;
+        }
+
         const getAutomaticNextDueDate = () => {
           const freqDays = { diario:1, semanal:7, quinzenal:15, mensal:30 };
           const days = freqDays[loanForDue?.frequency] || 30;
@@ -1240,18 +1437,15 @@
           paid_to_period_interest: paidToPeriodInterest,
           paid_to_extra_interest: paidToExtraInterest,
           paid_to_penalty: paidToPenalty,
-          paid_extra_to_future_installments: isInstallmentMode ? extraForFutureInstallments : 0,
+          paid_extra_to_future_installments: 0,
           recalculated_remaining_principal: remainingPrincipalAfterPayment,
           recalculated_future_interest: patch.interest ?? ''
         });
 
         DB.updateInstallment(inst.id, patch);
 
-        let appliedDiscount = 0;
-        if (isInstallmentMode && extraForFutureInstallments > 0.009) {
-          appliedDiscount = Finance.applyOverpaymentToLastInstallments(inst.loan_id_inst, inst.id, extraForFutureInstallments);
-          if (appliedDiscount > 0) Utils.toast('Parcela quitada e sobra abatida das últimas parcelas: ' + Utils.fmtMoney(appliedDiscount), 'success');
-        }
+        // Pagamento normal não aplica desconto/antecipação nas futuras parcelas.
+        // Para isso, use explicitamente o tipo "Antecipar parcelas futuras".
 
         const allInst = DB.getInstallmentsByLoan(inst.loan_id_inst);
         const allPaid = allInst.every(i => i.id === inst.id ? patch.status_inst === 'pago' : i.status_inst === 'pago');
@@ -2028,6 +2222,8 @@
       // Esses campos podem mudar quando há sincronização, desconto nas últimas parcelas
       // ou ajustes retroativos, mas o dinheiro recebido é o histórico de pagamentos.
       const totalPaymentReceived = payments.reduce((s, p) => s + Number(p.payment_amount || 0), 0);
+      const totalAnticipationDiscount = payments.reduce((s, p) => s + Number(p.antecipacao_discount_total || 0), 0);
+      const totalAnticipationBaixa = payments.reduce((s, p) => s + Number(p.antecipacao_total_baixado || 0), 0);
 
       let totalRealDebt = 0, totalPrincipalOpen = 0, totalInterestOpen = 0, totalPaidPrincipal = 0, totalPaidPeriodInterest = 0, totalPaidExtraInterest = 0, totalPaidPenalty = 0;
       installments.forEach(inst => {
@@ -2057,9 +2253,11 @@
             <div class="stat-card"><p class="text-xs text-slate-400">Juros/Multa Aberto</p><p class="font-bold text-yellow-400">${Utils.fmtMoney(totalInterestOpen)}</p></div>
             <div class="stat-card"><p class="text-xs text-slate-400">Principal Pago</p><p class="font-bold text-green-400">${Utils.fmtMoney(totalPaidPrincipal)}</p></div>
           </div>
-          <div class="grid grid-cols-2 gap-2 mt-2 text-center text-sm">
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2 text-center text-sm">
             <div class="stat-card"><p class="text-xs text-slate-400">Juros/Multa Pagos</p><p class="font-bold text-green-400">${Utils.fmtMoney(totalPaidPeriodInterest + totalPaidExtraInterest + totalPaidPenalty)}</p></div>
-            <div class="stat-card"><p class="text-xs text-slate-400">Total Recebido</p><p class="font-bold text-green-400">${Utils.fmtMoney(totalPaymentReceived)}</p><p class="text-[10px] text-slate-500 mt-1">Soma dos pagamentos recebidos</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Total Recebido</p><p class="font-bold text-green-400">${Utils.fmtMoney(totalPaymentReceived)}</p><p class="text-[10px] text-slate-500 mt-1">Dinheiro que entrou</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Desconto Antecipação</p><p class="font-bold text-emerald-300">${Utils.fmtMoney(totalAnticipationDiscount)}</p><p class="text-[10px] text-slate-500 mt-1">Não é recebido</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Baixa Total no Contrato</p><p class="font-bold text-gold-400">${Utils.fmtMoney(totalPaymentReceived + totalAnticipationDiscount)}</p><p class="text-[10px] text-slate-500 mt-1">Recebido + desconto</p></div>
           </div>
           <div class="flex gap-2 mt-3">
             <button onclick="activeModal={type:'message',loanKey:'${loan.loan_id}'};render()" class="btn-outline flex-1 py-2 text-sm flex items-center justify-center gap-1"><i data-lucide="message-circle" class="w-4 h-4"></i> Msg</button>
@@ -2080,11 +2278,11 @@
                 <p class="text-xs text-slate-400">Venc: ${Utils.fmtDate(inst.due_date)} ${isOverdue ? `(${det.daysLate}d atraso)` : ''}</p>
                 <p class="text-xs text-slate-500">Principal Pago: ${Utils.fmtMoney(Finance.getPaidTotal(inst, 'principal'))} | Principal Pendente: ${Utils.fmtMoney(det.principal)}</p>
                 <p class="text-xs text-slate-500">Juros Pagos: ${Utils.fmtMoney(Finance.getPaidTotal(inst, 'periodInterest') + Finance.getPaidTotal(inst, 'extraInterest'))} | Juros Pendentes: ${Utils.fmtMoney(det.totalInterestPending)}</p>
-                ${Number(inst.discount_applied || 0) > 0 ? `<p class="text-xs text-green-300">Desconto aplicado por pagamento a mais: ${Utils.fmtMoney(inst.discount_applied)}</p>` : ''}
+                ${Number(inst.antecipacao_desconto || 0) > 0 ? `<p class="text-xs text-emerald-300">Desconto por antecipação: ${Utils.fmtMoney(inst.antecipacao_desconto)} • Baixa total: ${Utils.fmtMoney(inst.antecipacao_baixa_total || 0)}</p>` : Number(inst.discount_applied || 0) > 0 ? `<p class="text-xs text-green-300">Desconto aplicado: ${Utils.fmtMoney(inst.discount_applied)}</p>` : ''}
                 ${!isPaid && det.accumulatedPenalty > 0 ? `<p class="text-xs text-red-300">Multa: ${Utils.fmtMoney(det.accumulatedPenalty)} | Multa Paga: ${Utils.fmtMoney(Finance.getPaidTotal(inst, 'penalty'))}</p>` : ''}
               </div>
               <div class="flex flex-row sm:flex-col items-stretch sm:items-end gap-2 w-full sm:w-auto">
-                <span class="badge ${isPaid?'badge-paid':isOverdue?'badge-overdue':'badge-pending'} justify-center">${isPaid?'Pago':isOverdue?'Atraso':'Pendente'}</span>
+                <span class="badge ${isPaid?'badge-paid':isOverdue?'badge-overdue':'badge-pending'} justify-center">${inst.status_antecipacao === 'quitada_antecipada' ? 'Quitada antecipada' : inst.status_antecipacao === 'parcialmente_antecipada' ? 'Parcial antecipada' : isPaid?'Pago':isOverdue?'Atraso':'Pendente'}</span>
                 ${!isPaid ? `<button type="button" onclick="event.preventDefault();event.stopPropagation();activeModal={type:'payment',instId:'${inst.id}'};render();" class="btn-gold py-2 px-4 text-xs font-bold whitespace-nowrap flex-1 sm:flex-none">Registrar pagamento</button>` : ''}
               </div>
             </div>
@@ -2095,8 +2293,11 @@
           <div class="flex justify-between items-start gap-3">
             <div class="flex-1">
               <div class="flex justify-between"><p class="text-sm">${Utils.fmtMoney(p.payment_amount)}</p><p class="text-xs text-slate-400">${Utils.fmtDate(p.payment_date)}</p></div>
-              <p class="text-xs text-slate-400 capitalize">${p.payment_type === 'jurosMulta' ? 'Juros + Multa' : p.payment_type === 'integral' ? 'Integral' : 'Parcial'}</p>
-              <p class="text-xs text-slate-500 mt-1">Principal: ${Utils.fmtMoney(p.paid_to_principal || 0)} • J. Período: ${Utils.fmtMoney(p.paid_to_period_interest || 0)} • J. Extras: ${Utils.fmtMoney(p.paid_to_extra_interest || 0)} • Multa: ${Utils.fmtMoney(p.paid_to_penalty || 0)}</p>
+              <p class="text-xs text-slate-400 capitalize">${p.payment_type === 'antecipacao_parcelas' ? 'Antecipação de parcelas futuras' : p.payment_type === 'jurosMulta' ? 'Juros + Multa' : p.payment_type === 'integral' ? 'Integral' : 'Parcial'}</p>
+              ${p.payment_type === 'antecipacao_parcelas' ? `<div class="text-xs text-slate-500 mt-1 space-y-1">
+                <p>Total recebido: ${Utils.fmtMoney(p.payment_amount || 0)} • Desconto: ${Utils.fmtMoney(p.antecipacao_discount_total || 0)} • Baixa total: ${Utils.fmtMoney(p.antecipacao_total_baixado || 0)}</p>
+                ${(p.parcelas_afetadas || []).map(a => `<p class="text-emerald-300">Parcela #${a.numeroParcela}: ${a.statusNovo === 'quitada_antecipada' ? 'quitada' : 'abatida'} por ${Utils.fmtMoney(a.valorRecebidoAplicado)} • desconto ${Utils.fmtMoney(a.descontoAplicado)} • ${a.diasAntecipados} dia(s)</p>`).join('')}
+              </div>` : `<p class="text-xs text-slate-500 mt-1">Principal: ${Utils.fmtMoney(p.paid_to_principal || 0)} • J. Período: ${Utils.fmtMoney(p.paid_to_period_interest || 0)} • J. Extras: ${Utils.fmtMoney(p.paid_to_extra_interest || 0)} • Multa: ${Utils.fmtMoney(p.paid_to_penalty || 0)}</p>`}
             </div>
             <button onclick="confirmAction={type:'deletePayment',id:'${p.id}',amount:'${Utils.fmtMoney(p.payment_amount)}'};render()" class="btn-danger py-1 px-2 text-xs flex items-center gap-1"><i data-lucide="trash-2" class="w-3 h-3"></i> Excluir</button>
           </div>
@@ -2509,7 +2710,7 @@
                 <p class="text-xs text-slate-400">Venc: ${Utils.fmtDate(inst.due_date)} ${isOverdue?'('+det.daysLate+'d)':''}</p>
                 <p class="text-xs text-slate-500">Principal Pago: ${Utils.fmtMoney(Finance.getPaidTotal(inst, 'principal'))} | Principal Pendente: ${Utils.fmtMoney(det.principal)}</p>
                 <p class="text-xs text-slate-500">Juros Pagos: ${Utils.fmtMoney(Finance.getPaidTotal(inst, 'periodInterest') + Finance.getPaidTotal(inst, 'extraInterest'))} | Juros Pendentes: ${Utils.fmtMoney(det.totalInterestPending)}</p>
-                ${Number(inst.discount_applied || 0) > 0 ? `<p class="text-xs text-green-300">Desconto aplicado por pagamento a mais: ${Utils.fmtMoney(inst.discount_applied)}</p>` : ''}
+                ${Number(inst.antecipacao_desconto || 0) > 0 ? `<p class="text-xs text-emerald-300">Desconto por antecipação: ${Utils.fmtMoney(inst.antecipacao_desconto)} • Baixa total: ${Utils.fmtMoney(inst.antecipacao_baixa_total || 0)}</p>` : Number(inst.discount_applied || 0) > 0 ? `<p class="text-xs text-green-300">Desconto aplicado: ${Utils.fmtMoney(inst.discount_applied)}</p>` : ''}
                 ${!isPaid && det.accumulatedPenalty > 0 ? `<p class="text-xs text-red-300">Multa: ${Utils.fmtMoney(det.accumulatedPenalty)} | Multa Paga: ${Utils.fmtMoney(Finance.getPaidTotal(inst, 'penalty'))}</p>` : ''}
               </div>
               <div class="flex flex-col items-end gap-2">
@@ -2574,10 +2775,15 @@
           <hr class="border-gold-800/20 my-2">
           <p class="text-gold-400 font-bold">Total devido: ${Utils.fmtMoney(det.totalDue)}</p>
         </div>
+        <div class="grid grid-cols-2 gap-2 mb-3">
+          <button type="button" onclick="document.getElementById('pay-mode-title').textContent='Pagamento normal';document.getElementById('pay-type').value='integral';document.getElementById('pay-next-wrap').style.display='block';document.getElementById('pay-amount').value='${det.totalDue.toFixed(2)}'" class="btn-gold py-2 px-3 text-xs">Pagamento normal</button>
+          <button type="button" onclick="document.getElementById('pay-mode-title').textContent='Antecipar parcelas futuras';document.getElementById('pay-type').value='antecipacao_parcelas';document.getElementById('pay-next-wrap').style.display='none';" class="btn-outline py-2 px-3 text-xs">Antecipar parcelas futuras</button>
+        </div>
+        <p id="pay-mode-title" class="text-xs text-gold-400 font-semibold mb-2">Pagamento normal</p>
         <div class="flex gap-2 mb-3 flex-wrap">
-          ${(det.totalInterestPending + det.accumulatedPenalty) > 0 ? `<button onclick="document.getElementById('pay-amount').value='${(det.totalInterestPending + det.accumulatedPenalty).toFixed(2)}';document.getElementById('pay-type').value='jurosMulta'" class="btn-outline py-1 px-3 text-xs">Juros + Multa</button>` : ''}
-          <button onclick="document.getElementById('pay-amount').value='${det.totalDue.toFixed(2)}';document.getElementById('pay-type').value='integral'" class="btn-outline py-1 px-3 text-xs">Integral</button>
-          <button onclick="document.getElementById('pay-type').value='parcial'" class="btn-outline py-1 px-3 text-xs">Parcial</button>
+          ${(det.totalInterestPending + det.accumulatedPenalty) > 0 ? `<button type="button" onclick="document.getElementById('pay-amount').value='${(det.totalInterestPending + det.accumulatedPenalty).toFixed(2)}';document.getElementById('pay-type').value='jurosMulta';document.getElementById('pay-mode-title').textContent='Pagamento normal - juros e multa'" class="btn-outline py-1 px-3 text-xs">Juros + Multa</button>` : ''}
+          <button type="button" onclick="document.getElementById('pay-amount').value='${det.totalDue.toFixed(2)}';document.getElementById('pay-type').value='integral';document.getElementById('pay-mode-title').textContent='Pagamento normal - integral'" class="btn-outline py-1 px-3 text-xs">Integral</button>
+          <button type="button" onclick="document.getElementById('pay-type').value='parcial';document.getElementById('pay-mode-title').textContent='Pagamento normal - parcial'" class="btn-outline py-1 px-3 text-xs">Parcial</button>
         </div>
         <form onsubmit="Crud.processPayment(event)">
           <label class="text-xs text-slate-400">Valor *</label>
@@ -2585,9 +2791,11 @@
           <input type="hidden" id="pay-type" value="integral">
           <label class="text-xs text-slate-400">Data do Pagamento</label>
           <input type="date" class="input-field mb-2" id="pay-date" value="${Utils.today()}" required>
-          <label class="text-xs text-slate-400">Nova data da próxima parcela / novo vencimento</label>
-          <input type="date" class="input-field mb-1" id="pay-next-due">
-          <p class="text-xs text-slate-500 mb-3">Tabela Price e Parcela Fixa: quitar parcela não muda a data dela. Pagamento acima do devido vira desconto nas últimas parcelas, de trás para frente. Saldo corrido proporcional: a nova data cria o próximo ciclo do saldo restante.</p>
+          <div id="pay-next-wrap">
+            <label class="text-xs text-slate-400">Nova data da próxima parcela / novo vencimento</label>
+            <input type="date" class="input-field mb-1" id="pay-next-due">
+          </div>
+          <p class="text-xs text-slate-500 mb-3">Pagamento normal: não mexe nas parcelas futuras. Antecipação: aplica o dinheiro nas parcelas futuras de trás para frente com desconto a valor presente, sem somar desconto no total recebido.</p>
           <div class="flex gap-2">
             <button type="button" onclick="activeModal=null;document.getElementById('payment-modal')?.remove()" class="btn-outline py-2 flex-1">Cancelar</button>
             <button type="submit" class="btn-gold py-2 flex-1">Confirmar</button>
