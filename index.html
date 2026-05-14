@@ -2,7 +2,7 @@
 <html lang="pt-BR" class="h-full">
 <head>    
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>MV Financeira - Sistema de Empréstimos</title>
   <script src="https://cdn.tailwindcss.com/3.4.17"></script>
   <script src="https://cdn.jsdelivr.net/npm/lucide@0.263.0/dist/umd/lucide.min.js"></script>
@@ -236,6 +236,275 @@
       .mv-admin-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .mv-brand-title { font-size: 1rem !important; }
       .mv-page-title { font-size: 1.7rem; }
+    }
+
+  
+
+    /* =====================================================
+       MV APP PREMIUM - MOBILE FIT FINAL
+       Mantém o padrão original, mas força encaixe correto em celular.
+       ===================================================== */
+    :root { --mv-safe-x: 14px; }
+    html, body {
+      width: 100% !important;
+      max-width: 100vw !important;
+      min-height: 100dvh !important;
+      overflow-x: hidden !important;
+      -webkit-text-size-adjust: 100%;
+    }
+    body {
+      background-attachment: fixed;
+      overscroll-behavior-x: none;
+    }
+    #app {
+      width: 100% !important;
+      max-width: 100vw !important;
+      min-height: 100dvh !important;
+      overflow-x: clip !important;
+    }
+    * { box-sizing: border-box; }
+    svg { flex-shrink: 0; }
+
+    /* Tela inicial premium, centralizada e sem corte lateral */
+    .home-screen {
+      min-height: 100dvh !important;
+      width: 100% !important;
+      max-width: 100vw !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      padding: max(22px, env(safe-area-inset-top)) var(--mv-safe-x) max(22px, env(safe-area-inset-bottom)) !important;
+      overflow: hidden !important;
+    }
+    .home-card {
+      width: min(100%, 390px) !important;
+      max-width: 390px !important;
+      margin: 0 auto !important;
+      padding: 26px 18px 22px !important;
+      border-radius: 26px;
+      border: 1px solid rgba(212,160,23,.16);
+      background: linear-gradient(145deg, rgba(26,39,68,.42), rgba(8,11,20,.18));
+      box-shadow: 0 20px 60px rgba(0,0,0,.18);
+      backdrop-filter: blur(10px);
+      text-align: center !important;
+    }
+    .home-title {
+      font-size: clamp(2rem, 10vw, 2.9rem) !important;
+      line-height: 1.03 !important;
+      letter-spacing: -.03em;
+      margin-left: auto !important;
+      margin-right: auto !important;
+    }
+    .home-actions {
+      display: grid !important;
+      grid-template-columns: 1fr !important;
+      gap: 12px !important;
+      width: 100% !important;
+      margin-top: 26px !important;
+    }
+    .home-actions button {
+      width: 100% !important;
+      min-height: 52px !important;
+      border-radius: 16px !important;
+      justify-content: center !important;
+      white-space: nowrap !important;
+      font-size: 1rem !important;
+    }
+
+    /* Cabeçalho admin premium: compacto, sem botão branco quebrado */
+    .mv-admin-shell {
+      width: 100% !important;
+      max-width: 100vw !important;
+      min-height: 100dvh !important;
+      overflow-x: hidden !important;
+    }
+    .mv-admin-header {
+      width: 100% !important;
+      max-width: 100vw !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: space-between !important;
+      flex-wrap: nowrap !important;
+      gap: 10px !important;
+      padding: 12px var(--mv-safe-x) !important;
+      background: rgba(8,11,20,.22);
+      backdrop-filter: blur(10px);
+    }
+    .mv-brand-wrap {
+      flex: 1 1 auto !important;
+      min-width: 0 !important;
+      display: flex !important;
+      align-items: center !important;
+      gap: 9px !important;
+    }
+    .mv-brand-title {
+      font-size: clamp(1.05rem, 4.8vw, 1.35rem) !important;
+      line-height: 1.1 !important;
+      display: block !important;
+      min-width: 0 !important;
+      max-width: 100% !important;
+      overflow: hidden !important;
+      text-overflow: ellipsis !important;
+      white-space: nowrap !important;
+    }
+    .mv-logout-btn {
+      appearance: none !important;
+      -webkit-appearance: none !important;
+      width: auto !important;
+      min-width: 0 !important;
+      min-height: 38px !important;
+      height: 38px !important;
+      padding: 0 12px !important;
+      border: 1px solid rgba(212,160,23,.28) !important;
+      border-radius: 999px !important;
+      background: rgba(8,11,20,.42) !important;
+      color: #cbd5e1 !important;
+      font-size: .78rem !important;
+      line-height: 1 !important;
+      display: inline-flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      gap: 6px !important;
+      flex: 0 0 auto !important;
+      box-shadow: none !important;
+    }
+    .mv-logout-btn svg { width: 15px !important; height: 15px !important; }
+
+    /* Menu estilo app: uma linha rolável, volta ao padrão original sem quebrar em grade gigante */
+    .mv-admin-tabs {
+      width: 100% !important;
+      max-width: 100vw !important;
+      display: flex !important;
+      grid-template-columns: none !important;
+      align-items: center !important;
+      gap: 8px !important;
+      padding: 10px var(--mv-safe-x) 12px !important;
+      overflow-x: auto !important;
+      overflow-y: hidden !important;
+      scrollbar-width: none;
+      -webkit-overflow-scrolling: touch;
+      border-bottom: 1px solid rgba(212,160,23,.10) !important;
+      background: rgba(8,11,20,.10);
+    }
+    .mv-admin-tabs::-webkit-scrollbar { display: none; }
+    .mv-admin-tabs .tab-btn {
+      appearance: none !important;
+      width: auto !important;
+      min-width: max-content !important;
+      min-height: 40px !important;
+      height: 40px !important;
+      flex: 0 0 auto !important;
+      display: inline-flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      gap: 7px !important;
+      padding: 0 13px !important;
+      border-radius: 999px !important;
+      font-size: .82rem !important;
+      line-height: 1 !important;
+      white-space: nowrap !important;
+    }
+    .mv-admin-tabs .tab-btn svg { width: 16px !important; height: 16px !important; }
+    .mv-admin-tabs .tab-btn.active {
+      box-shadow: 0 8px 22px rgba(212,160,23,.18);
+    }
+
+    .mv-admin-content {
+      width: 100% !important;
+      max-width: 980px !important;
+      margin: 0 auto !important;
+      padding: 14px var(--mv-safe-x) 24px !important;
+      overflow-x: hidden !important;
+    }
+    .mv-page-title {
+      font-size: clamp(1.65rem, 8vw, 2.25rem) !important;
+      line-height: 1.05 !important;
+      letter-spacing: -.035em;
+    }
+    .mv-section-header {
+      display: grid !important;
+      grid-template-columns: 1fr !important;
+      gap: 12px !important;
+      margin-bottom: 14px !important;
+    }
+    .mv-section-header .btn-gold {
+      width: 100% !important;
+      min-height: 48px !important;
+      border-radius: 16px !important;
+    }
+
+    /* Pesquisa e cards de cliente com cara de app */
+    .mv-search-card {
+      padding: 12px !important;
+      border-radius: 20px !important;
+      background: rgba(8,11,20,.34) !important;
+    }
+    .mv-search-inner {
+      min-height: 50px !important;
+      border-radius: 16px !important;
+      background: rgba(8,11,20,.70) !important;
+      border: 1px solid rgba(212,160,23,.22) !important;
+      display: flex !important;
+      align-items: center !important;
+      gap: 10px !important;
+      padding: 0 12px !important;
+    }
+    .mv-search-icon { color: #d4a017 !important; font-size: 1.2rem !important; }
+    .mv-search-input {
+      width: 100% !important;
+      min-width: 0 !important;
+      background: transparent !important;
+      border: 0 !important;
+      box-shadow: none !important;
+      padding: 13px 0 !important;
+      font-size: 16px !important;
+    }
+    .mv-client-card {
+      padding: 14px !important;
+      border-radius: 20px !important;
+      background: linear-gradient(145deg, rgba(26,39,68,.72), rgba(22,32,56,.54)) !important;
+    }
+    .mv-client-row {
+      display: grid !important;
+      grid-template-columns: 1fr auto !important;
+      align-items: center !important;
+      gap: 10px !important;
+    }
+    .mv-client-name {
+      font-size: 1rem !important;
+      line-height: 1.22 !important;
+      white-space: normal !important;
+      overflow: visible !important;
+      text-overflow: clip !important;
+    }
+    .mv-client-meta {
+      font-size: .78rem !important;
+      line-height: 1.28 !important;
+      color: #94a3b8 !important;
+      word-break: break-word !important;
+      margin-top: 5px !important;
+    }
+    .mv-client-actions {
+      display: flex !important;
+      flex-direction: column !important;
+      align-items: flex-end !important;
+      gap: 8px !important;
+    }
+    .mv-client-actions svg { width: 18px !important; height: 18px !important; }
+
+    @media (min-width: 640px) {
+      :root { --mv-safe-x: 18px; }
+      .mv-admin-content { padding-top: 18px !important; }
+      .mv-section-header { grid-template-columns: 1fr auto !important; align-items: center !important; }
+      .mv-section-header .btn-gold { width: auto !important; min-height: 42px !important; }
+      .home-card { max-width: 430px !important; padding: 32px 26px !important; }
+    }
+    @media (max-width: 380px) {
+      :root { --mv-safe-x: 10px; }
+      .mv-admin-tabs .tab-btn { padding: 0 11px !important; font-size: .78rem !important; }
+      .mv-brand-title { font-size: 1.02rem !important; }
+      .mv-logout-btn span { display: none; }
+      .home-card { padding-left: 14px !important; padding-right: 14px !important; }
     }
 
   </style>
@@ -1849,7 +2118,6 @@
             <input type="password" id="admin-pass" class="input-field mb-4" placeholder="Digite a senha admin" required>
             <button type="submit" class="btn-gold w-full py-3">Entrar</button>
           </form>
-          <p id="admin-error" class="text-red-400 text-xs mt-3 text-center hidden">Erro</p>
         </div>
       </div>`;
     }
@@ -1862,9 +2130,7 @@
         currentScreen = 'admin';
         render();
       } else {
-        const err = document.getElementById('admin-error');
-        err.textContent = 'Senha incorreta';
-        err.classList.remove('hidden');
+        Utils.toast('Senha incorreta', 'error');
       }
     }
 
@@ -1961,7 +2227,7 @@
             <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-gold-500 to-gold-700 flex items-center justify-center shrink-0"><i data-lucide="landmark" class="w-5 h-5 text-navy-900"></i></div>
             <span class="mv-brand-title heading-font text-lg gold-gradient">${title}</span>
           </div>
-          <button onclick="adminLoggedIn=false;adminTab='clients';Utils.clearStates();currentScreen='home';render()" class="mv-logout-btn text-slate-300 text-xs flex items-center gap-1"><i data-lucide="log-out" class="w-4 h-4"></i> Sair</button>
+          <button onclick="adminLoggedIn=false;adminTab='clients';Utils.clearStates();currentScreen='home';render()" class="mv-logout-btn text-slate-300 text-xs flex items-center gap-1"><i data-lucide="log-out" class="w-4 h-4"></i> <span>Sair</span></button>
         </header>
         <nav class="mv-admin-tabs">
           ${tabs.map(t => `<button onclick="adminTab='${t.id}';render()" class="tab-btn ${adminTab===t.id?'active':''} flex items-center"><i data-lucide="${t.icon}"></i><span>${t.label}</span></button>`).join('')}
@@ -3240,4 +3506,3 @@
   </script>
 </body>
 </html>
-
