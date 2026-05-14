@@ -80,6 +80,164 @@
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: rgba(212, 160, 23, 0.3); border-radius: 3px; }
+
+
+    /* =========================
+       REFINAMENTO RESPONSIVO MV
+       Corrige telas quebradas em celular/tablet sem alterar regras de cálculo.
+       ========================= */
+    html, body { min-height: 100dvh; }
+    #app { min-height: 100dvh; width: 100%; }
+    * { min-width: 0; }
+    button, input, select, textarea { font: inherit; }
+    input, select, textarea { font-size: 16px; }
+    button { touch-action: manipulation; }
+    .stat-card, .card { overflow-wrap: anywhere; }
+    .modal-overlay { overflow-y: auto; align-items: flex-start; }
+    .modal-content { width: min(560px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); margin: 12px auto; }
+    header { gap: 10px; }
+    .tab-btn { flex: 0 0 auto; }
+
+    @media (max-width: 768px) {
+      body { overflow-x: hidden; }
+      .card { border-radius: 14px; }
+      .stat-card { padding: 12px; }
+      .modal-overlay { padding: 8px; }
+      .modal-content { padding: 16px; width: calc(100vw - 16px); }
+      [class*="px-4"] { }
+      .tab-btn { padding: 8px 12px; font-size: 0.75rem; }
+      .btn-gold, .btn-outline, .btn-danger { min-height: 38px; }
+    }
+
+    @media (max-width: 640px) {
+      header { flex-wrap: wrap; align-items: flex-start !important; }
+      header > * { min-width: 0; }
+      .heading-font { line-height: 1.15; }
+      .card p, .stat-card p { line-height: 1.25; }
+      .stat-card p:last-child { font-size: 0.95rem; }
+      /* Telas pequenas: evita cards esmagados em grades largas. */
+      [class*="sm:grid-cols-3"],
+      [class*="sm:grid-cols-4"],
+      [class*="sm:grid-cols-5"],
+      [class*="md:grid-cols-2"],
+      [class*="lg:grid-cols-2"],
+      [class*="lg:grid-cols-3"] {
+        grid-template-columns: repeat(1, minmax(0, 1fr)) !important;
+      }
+      /* Grids base com 3+ colunas também viram 1 coluna no celular. */
+      .grid-cols-3, .grid-cols-4, .grid-cols-5 {
+        grid-template-columns: repeat(1, minmax(0, 1fr)) !important;
+      }
+      /* Mantém alguns resumos de 2 colunas legíveis, mas sem estourar. */
+      .grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 420px) {
+      .grid-cols-2 { grid-template-columns: repeat(1, minmax(0, 1fr)) !important; }
+      .btn-gold, .btn-outline, .btn-danger { width: 100%; }
+      .flex.gap-2, .flex.gap-3 { flex-wrap: wrap; }
+      .modal-content { padding: 14px; }
+    }
+
+
+    /* =========================
+       FIX DEFINITIVO DA TELA INICIAL / MOBILE
+       Evita deslocamento lateral e centraliza login no celular.
+       ========================= */
+    html, body, #app {
+      width: 100% !important;
+      max-width: 100% !important;
+      overflow-x: hidden !important;
+      margin: 0 !important;
+    }
+    body { position: relative; }
+    #app { position: relative; left: 0; right: 0; }
+    .home-screen {
+      min-height: 100dvh;
+      width: 100%;
+      max-width: 100vw;
+      overflow-x: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px 16px;
+      box-sizing: border-box;
+    }
+    .home-card {
+      width: 100%;
+      max-width: 380px;
+      margin: 0 auto;
+      text-align: center;
+    }
+    .home-title {
+      font-size: clamp(2rem, 11vw, 3rem);
+      line-height: 1.05;
+      max-width: 100%;
+      overflow-wrap: normal;
+      white-space: normal;
+    }
+    .home-actions {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      margin-top: 28px;
+    }
+    .home-actions button {
+      width: 100%;
+      min-height: 52px;
+      justify-content: center;
+      white-space: nowrap;
+    }
+    @media (max-width: 420px) {
+      .home-screen { align-items: flex-start; padding-top: 52px; }
+      .home-card { max-width: 340px; }
+      .home-title { font-size: clamp(2rem, 12vw, 2.65rem); }
+    }
+
+
+
+    /* ===== AJUSTE MOBILE MV FINANCEIRA ===== */
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body, #app { width: 100%; max-width: 100vw; overflow-x: hidden; }
+    body { overscroll-behavior-x: none; }
+    button, input, select, textarea { max-width: 100%; }
+    .mv-admin-shell { width: 100%; max-width: 100vw; overflow-x: hidden; }
+    .mv-admin-header { min-width: 0; gap: 10px; }
+    .mv-brand-wrap { min-width: 0; flex: 1; }
+    .mv-brand-title { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .mv-logout-btn { flex-shrink: 0; min-height: 40px; padding: 8px 12px; border: 1px solid rgba(212,160,23,.25); border-radius: 12px; background: rgba(8,11,20,.25); }
+    .mv-admin-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 10px 12px; border-bottom: 1px solid rgba(212,160,23,.10); overflow: visible; }
+    .mv-admin-tabs .tab-btn { width: 100%; min-width: 0; min-height: 44px; padding: 8px 5px; justify-content: center; gap: 5px; font-size: .74rem; line-height: 1.05; }
+    .mv-admin-tabs .tab-btn svg { width: 17px !important; height: 17px !important; flex-shrink: 0; }
+    .mv-admin-content { width: 100%; max-width: 980px; margin: 0 auto; padding: 12px; overflow-x: hidden; }
+    .mv-page-title { font-size: clamp(1.45rem, 7vw, 2.2rem); line-height: 1.05; letter-spacing: -0.03em; }
+    .mv-section-header { display: flex; flex-direction: column; gap: 12px; margin-bottom: 14px; }
+    .mv-section-header .btn-gold { width: 100%; min-height: 48px; font-size: 1rem; }
+    .mv-search-card { padding: 12px; border-radius: 18px; background: rgba(8,11,20,.32); }
+    .mv-search-inner { display: flex; align-items: center; gap: 10px; background: rgba(8,11,20,.62); border: 1px solid rgba(212,160,23,.22); border-radius: 15px; padding: 0 12px; min-height: 50px; }
+    .mv-search-icon { color: #d4a017; font-size: 1.15rem; line-height: 1; flex: 0 0 auto; }
+    .mv-search-input { background: transparent !important; border: 0 !important; box-shadow: none !important; padding: 13px 0 !important; font-size: .95rem; }
+    .mv-search-clear { min-height: 40px; padding: 0 12px; white-space: nowrap; }
+    .mv-client-card { padding: 14px !important; border-radius: 18px; }
+    .mv-client-row { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; }
+    .mv-client-name { font-size: 1rem; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .mv-client-meta { font-size: .78rem; color: #94a3b8; word-break: break-word; margin-top: 5px; }
+    .mv-client-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+    .mv-client-actions svg { width: 18px !important; height: 18px !important; }
+    @media (min-width: 640px) {
+      .mv-admin-tabs { display: flex; overflow-x: auto; }
+      .mv-admin-tabs .tab-btn { width: auto; min-width: 112px; padding: 9px 14px; font-size: .8rem; }
+      .mv-admin-content { padding: 16px; }
+      .mv-section-header { flex-direction: row; align-items: center; justify-content: space-between; }
+      .mv-section-header .btn-gold { width: auto; min-height: 40px; font-size: .875rem; }
+    }
+    @media (max-width: 380px) {
+      .mv-admin-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .mv-brand-title { font-size: 1rem !important; }
+      .mv-page-title { font-size: 1.7rem; }
+    }
+
   </style>
 </head>
 <body class="h-full overflow-auto">
@@ -106,6 +264,7 @@
     let expandedLoanFolders = {};
     let healthStartDate = '';
     let healthEndDate = '';
+    let clientSearchQuery = '';
 
     const STORAGE_KEY = 'mv_financeira_local_v1';
 
@@ -127,6 +286,7 @@
         default_rate_weekly: '3.50',
         default_rate_biweekly: '7.50',
         default_rate_monthly: '15.00',
+        default_penalty_daily_rate: '1.00',
         admin_password: '@1997#'
       }
     };
@@ -148,6 +308,7 @@
         if (!configs.default_rate_weekly) configs.default_rate_weekly = '3.50';
         if (!configs.default_rate_biweekly) configs.default_rate_biweekly = '7.50';
         if (!configs.default_rate_monthly) configs.default_rate_monthly = '15.00';
+        if (!configs.default_penalty_daily_rate) configs.default_penalty_daily_rate = '1.00';
 
         const clients = (parsed.clients || []).map(client => {
           const baseDaily = Number(client.rate_daily ?? client.daily_rate ?? configs.default_rate_daily ?? 0.33);
@@ -924,7 +1085,7 @@
         const loan = DB.getLoanByKey(inst.loan_id_inst);
         const client = loan ? DB.getClientById(loan.client_id) : null;
         const lateDailyRate = Number(loan?.daily_rate_used ?? loan?.late_daily_rate ?? Finance.getLateDailyRate(client));
-        const penaltyRate = 1;
+        const penaltyRate = Number(loan?.penalty_daily_rate ?? DB.getConfig('default_penalty_daily_rate', '1.00'));
         const originalPrincipal = Number(inst.principal || 0);
         const paidPrincipal = Number(inst.paid_principal || 0);
         const paidExtraInterest = Number(inst.paid_extra_interest || 0);
@@ -941,7 +1102,11 @@
           const paidPeriodInterest = Number(inst.paid_period_interest || 0);
           const periodInterestPending = Math.max(0, grossInterest - paidPeriodInterest);
           const daysLate = todayDate > dueDate ? Math.floor((todayDate - dueDate) / 86400000) : 0;
-          const penaltyBrut = daysLate > 0 ? periodInterestPending * (penaltyRate / 100) * daysLate : 0;
+          // MULTA COMPOSTA: no saldo corrido, a multa de atraso fica separada do juros.
+          // Ela incide 1% ao dia composto sobre o capital em aberto + juros corridos pendentes,
+          // enquanto o cliente não quitar ao menos o valor mínimo de juros/multa do ciclo.
+          const penaltyBase = Math.max(0, principalRemaining + periodInterestPending);
+          const penaltyBrut = daysLate > 0 ? penaltyBase * (Math.pow(1 + (penaltyRate / 100), daysLate) - 1) : 0;
           const accumulatedPenalty = Math.max(0, penaltyBrut - paidPenalty);
           const totalInterestPending = periodInterestPending;
           const totalDue = Math.max(0, principalRemaining + totalInterestPending + accumulatedPenalty);
@@ -975,7 +1140,10 @@
         const extraInterestDaysLate = principalRemaining * (lateDailyRate / 100) * daysLate;
         const extraInterestPending = Math.max(0, extraInterestDaysLate - paidExtraInterest);
         const totalInterestPending = periodInterestPending + extraInterestPending;
-        const penaltyBrut = daysLate > 0 ? periodInterestPending * (penaltyRate / 100) * daysLate : 0;
+        // MULTA COMPOSTA em contratos parcelados: 1% ao dia composto, separada do juros.
+        // Base: juros pendentes da parcela.
+        const penaltyBase = Math.max(0, periodInterestPending);
+        const penaltyBrut = daysLate > 0 ? penaltyBase * (Math.pow(1 + (penaltyRate / 100), daysLate) - 1) : 0;
         const accumulatedPenalty = Math.max(0, penaltyBrut - paidPenalty);
         const totalDue = Math.max(0, principalRemaining + totalInterestPending + accumulatedPenalty);
         return { principal: principalRemaining, periodInterestPending, extraInterestPending, extraInterestDaysLate, accumulatedPenalty, totalInterestPending, earlyDiscount: 0, daysLate, totalDue, balance: totalDue };
@@ -1144,6 +1312,7 @@
         let inst = parseInt(document.getElementById('lf-inst').value, 10);
         const calculationMode = document.getElementById('lf-calc-mode')?.value || 'price';
         const fixedInstallmentValue = parseFloat(document.getElementById('lf-fixed-payment')?.value || '0');
+        const penaltyDailyRate = parseFloat(document.getElementById('lf-penalty-rate')?.value || DB.getConfig('default_penalty_daily_rate','1.00'));
         const loanDate = document.getElementById('lf-date').value || Utils.today();
         let firstDue = document.getElementById('lf-first').value;
 
@@ -1152,6 +1321,7 @@
         if (calculationMode === 'proporcional') inst = 1;
         if (!inst || inst < 1) return Utils.toast('Número de parcelas inválido', 'error');
         if (calculationMode === 'parcela_fixa' && (!fixedInstallmentValue || fixedInstallmentValue <= 0)) return Utils.toast('Informe o valor da parcela fixa', 'error');
+        if (isNaN(penaltyDailyRate) || penaltyDailyRate < 0) return Utils.toast('Informe a % diária da multa de atraso', 'error');
 
         if (!firstDue) {
           const d = new Date(loanDate + 'T12:00:00');
@@ -1191,6 +1361,7 @@
           daily_rate_used: dailyRate,
           client_level_used: client?.level || '1',
           late_daily_rate: dailyRate,
+          penalty_daily_rate: penaltyDailyRate,
           fixed_installment_value: calculationMode === 'parcela_fixa' ? fixedInstallmentValue : 0,
           calculated_from_fixed_installment: calculationMode === 'parcela_fixa'
         };
@@ -1324,6 +1495,7 @@
         }
 
         const det = Finance.calcInstallmentDetails(inst, paymentDate);
+        const minimumToRollCycle = Finance.round2(Number(det.totalInterestPending || 0) + Number(det.accumulatedPenalty || 0));
         let remainingAmount = amount;
 
         let paidToPeriodInterest = 0;
@@ -1393,33 +1565,37 @@
           patch = { ...patch, status_inst: 'pendente' };
           Utils.toast('Pagamento parcial registrado sem alterar o vencimento da parcela.', 'success');
         } else {
-          // Saldo corrido proporcional: aqui sim o pagamento parcial cria novo ciclo de saldo/data.
-          const paymentBeforeDue = new Date(paymentDate + 'T12:00:00') < new Date(previousDueDate + 'T12:00:00');
-          newDue = desiredNewDue || (paymentBeforeDue ? previousDueDate : getAutomaticNextDueDate());
-          const roundedPrincipal = Math.round(remainingPrincipalAfterPayment * 100) / 100;
-          let roundedInterest = 0;
-          const interestStartDate = paymentBeforeDue ? previousDueDate : paymentDate;
-          const futureInterest = Finance.calcFutureInterest(remainingPrincipalAfterPayment, dailyRateForLoan, interestStartDate, newDue);
-          roundedInterest = Math.round(futureInterest * 100) / 100;
-          patch = {
-            ...patch,
-            original_principal_before_recalc: Number(inst.original_principal_before_recalc ?? inst.principal ?? 0),
-            original_interest_before_recalc: Number(inst.original_interest_before_recalc ?? inst.interest ?? 0),
-            principal: roundedPrincipal,
-            interest: 0,
-            installment_amount: roundedPrincipal,
-            interest_start_date: paymentDate,
-            paid_principal: 0,
-            paid_period_interest: 0,
-            paid_extra_interest: 0,
-            paid_penalty: 0,
-            start_balance: roundedPrincipal,
-            end_balance: 0,
-            due_date: newDue,
-            last_payment_date: '',
-            status_inst: 'pendente'
-          };
-          Utils.toast('Pagamento registrado. Saldo corrido atualizado pela data do pagamento!', 'success');
+          // Saldo corrido proporcional: só cria novo ciclo se o cliente pagou todo o mínimo
+          // de juros + multa do ciclo. Se pagar menos, NÃO dá baixa total nem reinicia a data-base.
+          const paidInterestPenaltyNow = Finance.round2(paidToPeriodInterest + paidToExtraInterest + paidToPenalty);
+          const canRollCycle = minimumToRollCycle <= 0.009 || paidInterestPenaltyNow + 0.009 >= minimumToRollCycle;
+          if (!canRollCycle) {
+            patch = { ...patch, status_inst: 'pendente' };
+            Utils.toast('Pagamento parcial registrado. Juros/multa não foram quitados; o ciclo não foi renovado.', 'success');
+          } else {
+            const paymentBeforeDue = new Date(paymentDate + 'T12:00:00') < new Date(previousDueDate + 'T12:00:00');
+            newDue = desiredNewDue || (paymentBeforeDue ? previousDueDate : getAutomaticNextDueDate());
+            const roundedPrincipal = Math.round(remainingPrincipalAfterPayment * 100) / 100;
+            patch = {
+              ...patch,
+              original_principal_before_recalc: Number(inst.original_principal_before_recalc ?? inst.principal ?? 0),
+              original_interest_before_recalc: Number(inst.original_interest_before_recalc ?? inst.interest ?? 0),
+              principal: roundedPrincipal,
+              interest: 0,
+              installment_amount: roundedPrincipal,
+              interest_start_date: paymentDate,
+              paid_principal: 0,
+              paid_period_interest: 0,
+              paid_extra_interest: 0,
+              paid_penalty: 0,
+              start_balance: roundedPrincipal,
+              end_balance: 0,
+              due_date: newDue,
+              last_payment_date: '',
+              status_inst: 'pendente'
+            };
+            Utils.toast('Pagamento registrado. Juros/multa quitados e saldo corrido atualizado pela data do pagamento!', 'success');
+          }
         }
 
         DB.addPayment({
@@ -1614,6 +1790,8 @@
     function render() {
       const app = document.getElementById('app');
       const title = DB.getConfig('business_name', 'MV Financeira');
+      document.documentElement.style.overflowX = 'hidden';
+      document.body.style.overflowX = 'hidden';
 
       switch (currentScreen) {
         case 'home': app.innerHTML = renderHome(title); break;
@@ -1625,6 +1803,10 @@
         case 'investor': app.innerHTML = renderInvestorPortal(title); break;
       }
 
+      // Evita o navegador manter rolagem lateral antiga após atualizar o arquivo no celular.
+      document.documentElement.scrollLeft = 0;
+      document.body.scrollLeft = 0;
+
       if (confirmAction) showConfirmModal();
       if (activeModal?.type === 'payment') showPaymentModal();
       if (activeModal?.type === 'message') showMessageModal();
@@ -1634,24 +1816,25 @@
     }
 
     function renderHome(title) {
-      return `<div class="flex flex-col items-center justify-center h-full w-full p-4 md:p-6 fade-in">
-        <div class="text-center mb-10">
-          <div class="w-20 h-20 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-gold-500 to-gold-700 flex items-center justify-center pulse-gold">
+      return `<div class="home-screen fade-in">
+        <div class="home-card">
+          <div class="w-20 h-20 mx-auto mb-5 rounded-2xl bg-gradient-to-br from-gold-500 to-gold-700 flex items-center justify-center pulse-gold">
             <i data-lucide="landmark" class="w-10 h-10 text-navy-900"></i>
           </div>
-          <h1 class="heading-font text-2xl md:text-4xl gold-gradient mb-2">${title}</h1>
-          <p class="text-slate-400 text-sm">Sistema de Gestão de Empréstimos</p>
-        </div>
-        <div class="flex flex-col gap-4 w-full max-w-xs">
-          <button onclick="currentScreen='adminLogin';Utils.clearStates();render()" class="btn-gold py-4 px-6 text-base flex items-center justify-center gap-3">
-            <i data-lucide="shield" class="w-5 h-5"></i> Administrador
-          </button>
-          <button onclick="currentScreen='clientLogin';Utils.clearStates();render()" class="btn-outline py-4 px-6 text-base flex items-center justify-center gap-3">
-            <i data-lucide="user" class="w-5 h-5"></i> Cliente
-          </button>
-          <button onclick="currentScreen='investorLogin';Utils.clearStates();render()" class="btn-outline py-4 px-6 text-base flex items-center justify-center gap-3">
-            <i data-lucide="trending-up" class="w-5 h-5"></i> Investidor
-          </button>
+          <h1 class="heading-font gold-gradient home-title mb-3">${title}</h1>
+          <p class="text-slate-300 text-base leading-snug px-2">Sistema de Gestão de Empréstimos</p>
+
+          <div class="home-actions">
+            <button onclick="currentScreen='adminLogin';Utils.clearStates();render()" class="btn-gold py-4 px-6 text-base flex items-center gap-3">
+              <i data-lucide="shield" class="w-5 h-5 shrink-0"></i> <span>Administrador</span>
+            </button>
+            <button onclick="currentScreen='clientLogin';Utils.clearStates();render()" class="btn-outline py-4 px-6 text-base flex items-center gap-3">
+              <i data-lucide="user" class="w-5 h-5 shrink-0"></i> <span>Cliente</span>
+            </button>
+            <button onclick="currentScreen='investorLogin';Utils.clearStates();render()" class="btn-outline py-4 px-6 text-base flex items-center gap-3">
+              <i data-lucide="trending-up" class="w-5 h-5 shrink-0"></i> <span>Investidor</span>
+            </button>
+          </div>
         </div>
       </div>`;
     }
@@ -1772,18 +1955,18 @@
         case 'terms': content = renderTermsTab(); break;
         case 'settings': content = renderSettingsTab(); break;
       }
-      return `<div class="flex flex-col h-full w-full fade-in">
-        <header class="flex items-center justify-between px-4 py-3 border-b border-gold-800/20">
-          <div class="flex items-center gap-2">
-            <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-gold-500 to-gold-700 flex items-center justify-center"><i data-lucide="landmark" class="w-4 h-4 text-navy-900"></i></div>
-            <span class="heading-font text-lg gold-gradient">${title}</span>
+      return `<div class="mv-admin-shell flex flex-col min-h-full w-full fade-in">
+        <header class="mv-admin-header flex items-center justify-between px-3 sm:px-4 py-3 border-b border-gold-800/20">
+          <div class="mv-brand-wrap flex items-center gap-2">
+            <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-gold-500 to-gold-700 flex items-center justify-center shrink-0"><i data-lucide="landmark" class="w-5 h-5 text-navy-900"></i></div>
+            <span class="mv-brand-title heading-font text-lg gold-gradient">${title}</span>
           </div>
-          <button onclick="adminLoggedIn=false;adminTab='clients';Utils.clearStates();currentScreen='home';render()" class="text-slate-400 text-xs flex items-center gap-1"><i data-lucide="log-out" class="w-4 h-4"></i> Sair</button>
+          <button onclick="adminLoggedIn=false;adminTab='clients';Utils.clearStates();currentScreen='home';render()" class="mv-logout-btn text-slate-300 text-xs flex items-center gap-1"><i data-lucide="log-out" class="w-4 h-4"></i> Sair</button>
         </header>
-        <div class="flex gap-1 px-3 py-2 overflow-x-auto border-b border-gold-800/10">
-          ${tabs.map(t => `<button onclick="adminTab='${t.id}';render()" class="tab-btn ${adminTab===t.id?'active':''} flex items-center gap-1"><i data-lucide="${t.icon}" class="w-3.5 h-3.5"></i> ${t.label}</button>`).join('')}
-        </div>
-        <div class="flex-1 overflow-auto p-4">${content}</div>
+        <nav class="mv-admin-tabs">
+          ${tabs.map(t => `<button onclick="adminTab='${t.id}';render()" class="tab-btn ${adminTab===t.id?'active':''} flex items-center"><i data-lucide="${t.icon}"></i><span>${t.label}</span></button>`).join('')}
+        </nav>
+        <main class="mv-admin-content flex-1">${content}</main>
       </div>`;
     }
 
@@ -1791,23 +1974,47 @@
       if (editingClient !== null) return renderClientForm();
       if (viewingClient) return renderClientDetail();
       const clients = DB.getClients();
-      return `<div>
-        <div class="flex items-center justify-between mb-4">
-          <h2 class="text-lg font-semibold">Clientes <span class="text-slate-500 text-sm">(${clients.length})</span></h2>
-          <button onclick="editingClient={};render()" class="btn-gold py-2 px-4 text-sm flex items-center gap-1"><i data-lucide="plus" class="w-4 h-4"></i> Novo</button>
+      const normalizeSearch = (text) => String(text || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const safeSearch = String(clientSearchQuery || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+      const searchTerm = normalizeSearch(clientSearchQuery);
+      const filteredClients = searchTerm
+        ? clients.filter(c => {
+            const searchable = normalizeSearch(`${c.name || ''} ${c.cpf || ''} ${c.phone || ''}`);
+            return searchable.includes(searchTerm);
+          })
+        : clients;
+      return `<div class="fade-in">
+        <div class="mv-section-header">
+          <div class="min-w-0">
+            <h2 class="mv-page-title font-bold">Clientes <span class="text-slate-500 text-base align-middle">(${filteredClients.length}/${clients.length})</span></h2>
+            <p class="text-sm text-slate-400 mt-1">Busque por nome, CPF ou telefone.</p>
+          </div>
+          <button onclick="editingClient={};render()" class="btn-gold py-2 px-4 flex items-center justify-center gap-2"><i data-lucide="plus" class="w-5 h-5"></i> Novo Cliente</button>
         </div>
-        ${clients.length === 0 ? '<p class="text-slate-500 text-center py-8">Nenhum cliente cadastrado</p>' : clients.map(c => `<div class="card card-hover p-4 mb-3" onclick="viewingClient='${c.id}';render()">
-          <div class="flex items-center justify-between">
-            <div>
-              <p class="font-semibold">${c.name}</p>
-              <p class="text-xs text-slate-400">${c.cpf} • ${c.phone || ''}</p>
+
+        <div class="card mv-search-card mb-4">
+          <label class="text-xs text-slate-400 mb-2 block">Pesquisar cliente</label>
+          <div class="flex gap-2 items-center">
+            <div class="mv-search-inner flex-1">
+              <span class="mv-search-icon">⌕</span>
+              <input class="mv-search-input input-field" id="client-search" value="${safeSearch}" placeholder="Nome, CPF ou telefone" oninput="clientSearchQuery=this.value;render()" autocomplete="off">
             </div>
-            <div class="flex items-center gap-2">
+            ${clientSearchQuery ? `<button onclick="clientSearchQuery='';render()" class="mv-search-clear btn-outline text-sm">Limpar</button>` : ''}
+          </div>
+        </div>
+
+        ${clients.length === 0 ? '<p class="text-slate-500 text-center py-8">Nenhum cliente cadastrado</p>' : filteredClients.length === 0 ? '<p class="text-slate-500 text-center py-8">Nenhum cliente encontrado com essa pesquisa.</p>' : `<div class="space-y-3">${filteredClients.map(c => `<div class="card card-hover mv-client-card" onclick="viewingClient='${c.id}';render()">
+          <div class="mv-client-row">
+            <div class="min-w-0">
+              <p class="mv-client-name font-semibold">${c.name}</p>
+              <p class="mv-client-meta">${c.cpf}${c.phone ? ' • ' + c.phone : ''}</p>
+            </div>
+            <div class="mv-client-actions">
               <span class="badge ${c.status==='ativo'?'badge-active':'badge-inactive'}">${c.status}</span>
-              <i data-lucide="chevron-right" class="w-4 h-4 text-slate-500"></i>
+              <i data-lucide="chevron-right" class="text-slate-400"></i>
             </div>
           </div>
-        </div>`).join('')}
+        </div>`).join('')}</div>`}
       </div>`;
     }
 
@@ -2135,6 +2342,7 @@
           </div>
           <div><label class="text-xs text-slate-400" id="lf-rate-label">% cobrada no prazo escolhido</label><input type="number" step="0.01" min="0" class="input-field" id="lf-rate" data-auto-rate="1" value="15.00" readonly required></div>
           <p class="text-xs text-slate-500 -mt-2" id="lf-rate-help">A taxa vem do nível do cliente e converte automático pelo prazo.</p>
+          <div><label class="text-xs text-slate-400">Multa de atraso diária (%)</label><input type="number" step="0.01" min="0" class="input-field" id="lf-penalty-rate" value="${DB.getConfig('default_penalty_daily_rate','1.00')}" required><p class="text-xs text-slate-500 mt-1">Essa % fica gravada somente neste empréstimo. Ex: 1,00% ao dia composto.</p></div>
           <div id="lf-fixed-wrap" style="display:none"><label class="text-xs text-slate-400">Valor da parcela fixa *</label><input type="number" step="0.01" min="0.01" class="input-field" id="lf-fixed-payment" placeholder="Ex: 350,00" oninput="updateLoanRatePlaceholder()"><p class="text-xs text-slate-500 mt-1">Neste modo você informa a parcela desejada, e o sistema calcula a taxa/juros equivalente no caminho inverso.</p></div>
           <div class="card p-3 text-xs text-slate-300" id="lf-preview">Selecione cliente, valor, prazo e parcelas para ver a simulação Price.</div>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -2225,12 +2433,13 @@
       const totalAnticipationDiscount = payments.reduce((s, p) => s + Number(p.antecipacao_discount_total || 0), 0);
       const totalAnticipationBaixa = payments.reduce((s, p) => s + Number(p.antecipacao_total_baixado || 0), 0);
 
-      let totalRealDebt = 0, totalPrincipalOpen = 0, totalInterestOpen = 0, totalPaidPrincipal = 0, totalPaidPeriodInterest = 0, totalPaidExtraInterest = 0, totalPaidPenalty = 0;
+      let totalRealDebt = 0, totalPrincipalOpen = 0, totalInterestOpen = 0, totalPenaltyOpen = 0, totalPaidPrincipal = 0, totalPaidPeriodInterest = 0, totalPaidExtraInterest = 0, totalPaidPenalty = 0;
       installments.forEach(inst => {
         const det = Finance.calcInstallmentDetails(inst);
         totalRealDebt += det.totalDue;
         totalPrincipalOpen += det.principal;
-        totalInterestOpen += det.totalInterestPending + det.accumulatedPenalty;
+        totalInterestOpen += det.totalInterestPending;
+        totalPenaltyOpen += det.accumulatedPenalty;
         totalPaidPrincipal += Finance.getPaidTotal(inst, 'principal');
         totalPaidPeriodInterest += Finance.getPaidTotal(inst, 'periodInterest');
         totalPaidExtraInterest += Finance.getPaidTotal(inst, 'extraInterest');
@@ -2244,17 +2453,20 @@
             <div>
               <p class="font-semibold">${DB.getClientById(loan.client_id)?.name || 'Cliente'}</p>
               <p class="text-gold-400 text-lg font-bold">${Utils.fmtMoney(loan.amount)}</p>
+              <p class="text-xs text-slate-400">Multa atraso: ${Number(loan.penalty_daily_rate ?? DB.getConfig('default_penalty_daily_rate','1.00')).toFixed(2)}% ao dia</p>
             </div>
             <span class="badge ${loan.status_loan==='ativo'?'badge-active':'badge-paid'}">${loan.status_loan}</span>
           </div>
-          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-sm">
+          <div class="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center text-sm">
             <div class="stat-card"><p class="text-xs text-slate-400">Valor Devido</p><p class="font-bold text-red-400">${Utils.fmtMoney(totalRealDebt)}</p></div>
             <div class="stat-card"><p class="text-xs text-slate-400">Principal Aberto</p><p class="font-bold text-gold-400">${Utils.fmtMoney(totalPrincipalOpen)}</p></div>
-            <div class="stat-card"><p class="text-xs text-slate-400">Juros/Multa Aberto</p><p class="font-bold text-yellow-400">${Utils.fmtMoney(totalInterestOpen)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Juros Aberto</p><p class="font-bold text-yellow-400">${Utils.fmtMoney(totalInterestOpen)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Multa Aberta</p><p class="font-bold text-red-300">${Utils.fmtMoney(totalPenaltyOpen)}</p></div>
             <div class="stat-card"><p class="text-xs text-slate-400">Principal Pago</p><p class="font-bold text-green-400">${Utils.fmtMoney(totalPaidPrincipal)}</p></div>
           </div>
-          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2 text-center text-sm">
-            <div class="stat-card"><p class="text-xs text-slate-400">Juros/Multa Pagos</p><p class="font-bold text-green-400">${Utils.fmtMoney(totalPaidPeriodInterest + totalPaidExtraInterest + totalPaidPenalty)}</p></div>
+          <div class="grid grid-cols-2 sm:grid-cols-5 gap-2 mt-2 text-center text-sm">
+            <div class="stat-card"><p class="text-xs text-slate-400">Juros Pagos</p><p class="font-bold text-green-400">${Utils.fmtMoney(totalPaidPeriodInterest + totalPaidExtraInterest)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Multa Paga</p><p class="font-bold text-green-400">${Utils.fmtMoney(totalPaidPenalty)}</p></div>
             <div class="stat-card"><p class="text-xs text-slate-400">Total Recebido</p><p class="font-bold text-green-400">${Utils.fmtMoney(totalPaymentReceived)}</p><p class="text-[10px] text-slate-500 mt-1">Dinheiro que entrou</p></div>
             <div class="stat-card"><p class="text-xs text-slate-400">Desconto Antecipação</p><p class="font-bold text-emerald-300">${Utils.fmtMoney(totalAnticipationDiscount)}</p><p class="text-[10px] text-slate-500 mt-1">Não é recebido</p></div>
             <div class="stat-card"><p class="text-xs text-slate-400">Baixa Total no Contrato</p><p class="font-bold text-gold-400">${Utils.fmtMoney(totalPaymentReceived + totalAnticipationDiscount)}</p><p class="text-[10px] text-slate-500 mt-1">Recebido + desconto</p></div>
@@ -2517,7 +2729,7 @@
           <p><b class="text-gold-400">2.</b> A taxa base é definida pelo nível do cliente: Nível 1 = 0,50% ao dia, Nível 2 = 0,35% ao dia, Nível 3 = 0,20% ao dia e Nível 4 = taxa personalizada.</p>
           <p><b class="text-gold-400">3.</b> O sistema converte a taxa pelo prazo: diário ×1, semanal ×7, quinzenal ×15 e mensal ×30.</p>
           <p><b class="text-gold-400">3.1.</b> As parcelas são fixas pela Tabela Price, com juros sobre o saldo devedor atual e amortização do principal.</p>
-          <p><b class="text-gold-400">4.</b> Em atraso, incide multa de 1% ao dia sobre os juros do período não pagos.</p>
+          <p><b class="text-gold-400">4.</b> Em atraso, a multa é calculada separadamente do juros. A multa é de 1% ao dia composto conforme o tipo do contrato.</p>
           <p><b class="text-gold-400">5.</b> Em atraso, há juros extras proporcionais sobre o principal restante, usando a taxa informada no empréstimo.</p>
           <p><b class="text-gold-400">6.</b> Pagamentos parciais seguem a ordem: juros do período → juros extras → multa → principal.</p>
           <p><b class="text-gold-400">7.</b> Pagamento apenas de juros e multa renova o vencimento em 30 dias.</p>
@@ -2537,6 +2749,7 @@
             <div><label class="text-xs text-slate-400">Nível 2 - taxa diária (%)</label><input type="number" step="0.01" class="input-field" id="set-level2" value="${DB.getConfig('level2_daily_rate','0.35')}"></div>
             <div><label class="text-xs text-slate-400">Nível 3 - taxa diária (%)</label><input type="number" step="0.01" class="input-field" id="set-level3" value="${DB.getConfig('level3_daily_rate','0.20')}"></div>
           </div>
+          <div><label class="text-xs text-slate-400">Multa diária padrão para novos empréstimos (%)</label><input type="number" step="0.01" min="0" class="input-field" id="set-penalty-rate" value="${DB.getConfig('default_penalty_daily_rate','1.00')}"><p class="text-xs text-slate-500 mt-1">Esse valor só preenche novos empréstimos. Empréstimos já cadastrados mantêm a multa gravada neles.</p></div>
           <p class="text-xs text-slate-500 -mt-2">Nível 4 é definido individualmente no cadastro do cliente. O sistema converte a taxa diária para o período escolhido automaticamente.</p>
           <button type="submit" class="btn-gold w-full py-3">Salvar Configurações</button>
         </form>
@@ -2565,6 +2778,7 @@
       DB.setConfig('default_rate_weekly', String(Number(level1) * 7));
       DB.setConfig('default_rate_biweekly', String(Number(level1) * 15));
       DB.setConfig('default_rate_monthly', String(Number(level1) * 30));
+      DB.setConfig('default_penalty_daily_rate', document.getElementById('set-penalty-rate')?.value.trim() || '1.00');
       const pass = document.getElementById('set-pass').value.trim();
       if (pass) DB.setConfig('admin_password', pass);
       Utils.toast('Configurações salvas!', 'success');
@@ -2670,33 +2884,40 @@
       if (!client) { clientLoggedIn = null; currentScreen = 'home'; return ''; }
       const loans = DB.getLoansByClient(client.id);
       const pix = DB.getConfig('pix_key', 'Não configurado');
-      let totalDebt = 0, totalPrincipalOpen = 0, totalPaidAll = 0, overdueCount = 0;
+      let totalDebt = 0, totalPrincipalOpen = 0, totalInterestOpen = 0, totalPenaltyOpen = 0, totalPaidAll = 0, overdueCount = 0;
 
       const loanCards = loans.map(loan => {
         Finance.ensureInstallmentsForLoan(loan);
         const insts = DB.getInstallmentsByLoan(loan.loan_id);
-        let loanTotalRealDebt = 0, loanPrincipalOpen = 0, loanTotalPaidPrincipal = 0, loanTotalPaidInterest = 0;
+        let loanTotalRealDebt = 0, loanPrincipalOpen = 0, loanInterestOpen = 0, loanPenaltyOpen = 0, loanTotalPaidPrincipal = 0, loanTotalPaidInterest = 0, loanTotalPaidPenalty = 0;
         insts.forEach(inst => {
           const det = Finance.calcInstallmentDetails(inst);
           loanTotalRealDebt += det.totalDue;
           loanPrincipalOpen += Number(det.principal || 0);
+          loanInterestOpen += Number(det.totalInterestPending || 0);
+          loanPenaltyOpen += Number(det.accumulatedPenalty || 0);
           loanTotalPaidPrincipal += Finance.getPaidTotal(inst, 'principal');
-          loanTotalPaidInterest += Finance.getPaidTotal(inst, 'periodInterest') + Finance.getPaidTotal(inst, 'extraInterest') + Finance.getPaidTotal(inst, 'penalty');
+          loanTotalPaidInterest += Finance.getPaidTotal(inst, 'periodInterest') + Finance.getPaidTotal(inst, 'extraInterest');
+          loanTotalPaidPenalty += Finance.getPaidTotal(inst, 'penalty');
         });
         totalDebt += loanTotalRealDebt;
         totalPrincipalOpen += loanPrincipalOpen;
-        totalPaidAll += loanTotalPaidPrincipal + loanTotalPaidInterest;
+        totalInterestOpen += loanInterestOpen;
+        totalPenaltyOpen += loanPenaltyOpen;
+        totalPaidAll += loanTotalPaidPrincipal + loanTotalPaidInterest + loanTotalPaidPenalty;
 
         return `<div class="card p-4 mb-4">
           <div class="flex justify-between items-center mb-3">
             <p class="font-semibold text-gold-400">${Utils.fmtMoney(loan.amount)}</p>
             <span class="badge ${loan.status_loan==='ativo'?'badge-active':'badge-paid'}">${loan.status_loan}</span>
           </div>
-          <div class="grid grid-cols-2 gap-2 text-center mb-3">
+          <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 text-center mb-3">
             <div class="stat-card"><p class="text-xs text-slate-400">Valor Devido</p><p class="text-sm font-bold text-red-400">${Utils.fmtMoney(loanTotalRealDebt)}</p></div>
             <div class="stat-card"><p class="text-xs text-slate-400">Principal Aberto</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(loanPrincipalOpen)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Juros Aberto</p><p class="text-sm font-bold text-yellow-400">${Utils.fmtMoney(loanInterestOpen)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Multa Aberta</p><p class="text-sm font-bold text-red-300">${Utils.fmtMoney(loanPenaltyOpen)}</p></div>
             <div class="stat-card"><p class="text-xs text-slate-400">Principal Pago</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(loanTotalPaidPrincipal)}</p></div>
-            <div class="stat-card"><p class="text-xs text-slate-400">Juros/Multa Pago</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(loanTotalPaidInterest)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Juros/Multa Pago</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(loanTotalPaidInterest + loanTotalPaidPenalty)}</p></div>
           </div>
           <h4 class="text-sm font-semibold mb-2">Parcelas</h4>
           ${insts.map(inst => {
@@ -2731,9 +2952,11 @@
           <button onclick="clientLoggedIn=null;Utils.clearStates();currentScreen='home';render()" class="text-slate-400 text-xs flex items-center gap-1"><i data-lucide="log-out" class="w-4 h-4"></i></button>
         </header>
         <div class="flex-1 overflow-auto p-4">
-          <div class="grid grid-cols-2 gap-2 mb-4">
+          <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4">
             <div class="stat-card text-center"><p class="text-xs text-slate-400">Valor Devido</p><p class="text-sm font-bold text-red-400">${Utils.fmtMoney(totalDebt)}</p></div>
             <div class="stat-card text-center"><p class="text-xs text-slate-400">Principal Aberto</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(totalPrincipalOpen)}</p></div>
+            <div class="stat-card text-center"><p class="text-xs text-slate-400">Juros Aberto</p><p class="text-sm font-bold text-yellow-400">${Utils.fmtMoney(totalInterestOpen)}</p></div>
+            <div class="stat-card text-center"><p class="text-xs text-slate-400">Multa Aberta</p><p class="text-sm font-bold text-red-300">${Utils.fmtMoney(totalPenaltyOpen)}</p></div>
             <div class="stat-card text-center"><p class="text-xs text-slate-400">Total Pago</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(totalPaidAll)}</p></div>
             <div class="stat-card text-center"><p class="text-xs text-slate-400">Atraso</p><p class="text-sm font-bold text-yellow-400">${overdueCount}</p></div>
           </div>
@@ -2768,9 +2991,9 @@
           <p class="text-xs text-slate-500 ml-4">↳ Pagos: <b class="text-green-400">${Utils.fmtMoney(Finance.getPaidTotal(inst, 'periodInterest'))}</b></p>
           <p class="text-xs text-slate-500 ml-4">↳ Pendentes: <b>${Utils.fmtMoney(det.periodInterestPending)}</b></p>
           ${det.extraInterestDaysLate > 0 ? `<p>Juros Extras por Atraso: <b class="text-orange-400">${Utils.fmtMoney(det.extraInterestDaysLate)}</b></p><p class="text-xs text-slate-500 ml-4">↳ Pagos: <b class="text-green-400">${Utils.fmtMoney(Finance.getPaidTotal(inst, 'extraInterest'))}</b></p><p class="text-xs text-slate-500 ml-4">↳ Pendentes: <b>${Utils.fmtMoney(det.extraInterestPending)}</b></p>` : ''}
-          <p class="font-semibold">Total de Juros em Aberto: <b class="text-yellow-400">${Utils.fmtMoney(det.totalInterestPending)}</b></p>
+          <p class="font-semibold">Juros em aberto: <b class="text-yellow-400">${Utils.fmtMoney(det.totalInterestPending)}</b></p>
           <hr class="border-gold-800/20 my-2">
-          ${det.accumulatedPenalty > 0 ? `<p>Multa Acumulada: <b class="text-red-400">${Utils.fmtMoney(det.accumulatedPenalty)}</b></p>` : ''}
+          ${det.accumulatedPenalty > 0 ? `<p>Multa composta em aberto: <b class="text-red-400">${Utils.fmtMoney(det.accumulatedPenalty)}</b></p>` : ''}
           ${det.daysLate > 0 ? `<p>Dias de Atraso: <b class="text-red-400">${det.daysLate}d</b></p>` : ''}
           <hr class="border-gold-800/20 my-2">
           <p class="text-gold-400 font-bold">Total devido: ${Utils.fmtMoney(det.totalDue)}</p>
@@ -2849,7 +3072,7 @@
         if (isProportional) {
           details += `\n📌 SALDO CORRIDO\n━━━━━━━━━━━━━━━━━━━━━━━━\nPrincipal em aberto: ${Utils.fmtMoney(det.principal)}\nJuros corridos: ${Utils.fmtMoney(det.totalInterestPending)}\n${det.accumulatedPenalty > 0 ? `Multa: ${Utils.fmtMoney(det.accumulatedPenalty)}\n` : ''}Dias calculados: ${det.daysRunning || 0} dia(s)\nData-base dos juros: ${Utils.fmtDate(det.interestStartDate || loan.date)}\nVencimento atual: ${Utils.fmtDate(inst.due_date)}${det.daysLate > 0 ? `\nAtraso: ${det.daysLate} dia(s)` : ''}\n💰 Total atualizado hoje: ${Utils.fmtMoney(det.totalDue)}\n`;
         } else {
-          details += `\n📌 PARCELA #${inst.number}\n━━━━━━━━━━━━━━━━━━━━━━━━\nParcela contratada: ${Utils.fmtMoney(inst.installment_amount)}\nPrincipal em aberto: ${Utils.fmtMoney(det.principal)}\nJuros/Multa em aberto: ${Utils.fmtMoney(Number(det.totalInterestPending || 0) + Number(det.accumulatedPenalty || 0))}\nPrincipal já pago: ${Utils.fmtMoney(paidPrincipal)}\nJuros/Multa já pagos: ${Utils.fmtMoney(paidInterest)}\nVencimento: ${Utils.fmtDate(inst.due_date)}${det.daysLate > 0 ? `\nAtraso: ${det.daysLate} dia(s)` : ''}\n💰 Total atualizado hoje: ${Utils.fmtMoney(det.totalDue)}\n`;
+          details += `\n📌 PARCELA #${inst.number}\n━━━━━━━━━━━━━━━━━━━━━━━━\nParcela contratada: ${Utils.fmtMoney(inst.installment_amount)}\nPrincipal em aberto: ${Utils.fmtMoney(det.principal)}\nJuros em aberto: ${Utils.fmtMoney(Number(det.totalInterestPending || 0))}\nMulta em aberto: ${Utils.fmtMoney(Number(det.accumulatedPenalty || 0))}\nPrincipal já pago: ${Utils.fmtMoney(paidPrincipal)}\nJuros/Multa já pagos: ${Utils.fmtMoney(paidInterest)}\nVencimento: ${Utils.fmtDate(inst.due_date)}${det.daysLate > 0 ? `\nAtraso: ${det.daysLate} dia(s)` : ''}\n💰 Total atualizado hoje: ${Utils.fmtMoney(det.totalDue)}\n`;
         }
       });
 
@@ -2870,7 +3093,7 @@
           ? `⚠️ Você possui ${overdueCount} parcela(s) / cobrança(s) em atraso.`
           : '✅ Não consta atraso neste momento.';
 
-      const msg = `Olá ${client?.name || ''}! 👋\n\nSegue o resumo atualizado do seu empréstimo na ${bizName}:\n\n🏦 DADOS DO EMPRÉSTIMO\n━━━━━━━━━━━━━━━━━━━━━━━━\nTipo de cálculo: ${calcLabel}\nValor contratado: ${Utils.fmtMoney(loan.amount)}\nTaxa diária base: ${dailyRate.toFixed(2).replace('.', ',')}% ao dia\nPrazo de cobrança: ${periodLabel}\n\n📊 SITUAÇÃO ATUAL\n━━━━━━━━━━━━━━━━━━━━━━━━\n${situationLine}\nValor devidoizado hoje: ${Utils.fmtMoney(currentDebt)}\nPrincipal em aberto: ${Utils.fmtMoney(principalOpen)}\nJuros/Multa em aberto: ${Utils.fmtMoney(interestOpen + penaltyOpen)}\nTotal em atraso: ${Utils.fmtMoney(overdueAmount)}\n\n✅ VALORES JÁ PAGOS\n━━━━━━━━━━━━━━━━━━━━━━━━\nTotal recebido: ${Utils.fmtMoney(totalReceived)}\nPrincipal pago: ${Utils.fmtMoney(totalPaidPrincipal)}\nJuros/Multa pagos: ${Utils.fmtMoney(totalPaidInterestPenalty)}\n${nextDetails}${details ? '\n📄 DETALHAMENTO\n' + details : ''}\n💰 FORMA DE PAGAMENTO\n━━━━━━━━━━━━━━━━━━━━━━━━\nPIX: ${pix}\n\nFavor realizar o pagamento conforme combinado. Após pagar, envie o comprovante para baixa no sistema.\n\nAtenciosamente,\n${bizName}`;
+      const msg = `Olá ${client?.name || ''}! 👋\n\nSegue o resumo atualizado do seu empréstimo na ${bizName}:\n\n🏦 DADOS DO EMPRÉSTIMO\n━━━━━━━━━━━━━━━━━━━━━━━━\nTipo de cálculo: ${calcLabel}\nValor contratado: ${Utils.fmtMoney(loan.amount)}\nTaxa diária base: ${dailyRate.toFixed(2).replace('.', ',')}% ao dia\nPrazo de cobrança: ${periodLabel}\n\n📊 SITUAÇÃO ATUAL\n━━━━━━━━━━━━━━━━━━━━━━━━\n${situationLine}\nValor devido atualizado hoje: ${Utils.fmtMoney(currentDebt)}\nPrincipal em aberto: ${Utils.fmtMoney(principalOpen)}\nJuros em aberto: ${Utils.fmtMoney(interestOpen)}\nMulta em aberto: ${Utils.fmtMoney(penaltyOpen)}\nTotal em atraso: ${Utils.fmtMoney(overdueAmount)}\n\n✅ VALORES JÁ PAGOS\n━━━━━━━━━━━━━━━━━━━━━━━━\nTotal recebido: ${Utils.fmtMoney(totalReceived)}\nPrincipal pago: ${Utils.fmtMoney(totalPaidPrincipal)}\nJuros/Multa pagos: ${Utils.fmtMoney(totalPaidInterestPenalty)}\n${nextDetails}${details ? '\n📄 DETALHAMENTO\n' + details : ''}\n💰 FORMA DE PAGAMENTO\n━━━━━━━━━━━━━━━━━━━━━━━━\nPIX: ${pix}\n\nFavor realizar o pagamento conforme combinado. Após pagar, envie o comprovante para baixa no sistema.\n\nAtenciosamente,\n${bizName}`;
 
       const safeMsg = msg.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const div = document.createElement('div');
@@ -3017,3 +3240,4 @@
   </script>
 </body>
 </html>
+
