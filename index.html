@@ -534,6 +534,9 @@
     let healthStartDate = '';
     let healthEndDate = '';
     let clientSearchQuery = '';
+    let loanSearchQuery = '';
+    let clientPortalSelectedLoan = '';
+    let mvSearchTimers = {};
 
     const STORAGE_KEY = 'mv_financeira_local_v1';
 
@@ -729,6 +732,61 @@
         activeModal = null;
       }
     };
+
+    function mvNormalizeText(text) {
+      return String(text || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    }
+    function mvEscapeHtml(text) {
+      return String(text ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+    }
+    function mvEscapeJs(text) {
+      return String(text ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '');
+    }
+    function mvDebouncedRender(key, delay = 220) {
+      clearTimeout(mvSearchTimers[key]);
+      mvSearchTimers[key] = setTimeout(() => render(), delay);
+    }
+    function mvGetLoanSummary(loan, referenceDate = Utils.today()) {
+      Finance.ensureInstallmentsForLoan(loan);
+      const installments = DB.getInstallmentsByLoan(loan.loan_id);
+      let totalDue = 0, principalOpen = 0, interestOpen = 0, penaltyOpen = 0, overdueCount = 0, overdueAmount = 0;
+      installments.forEach(inst => {
+        const det = Finance.calcInstallmentDetails(inst, referenceDate);
+        const isPaid = inst.status_inst === 'pago';
+        const isOverdue = !isPaid && det.daysLate > 0;
+        totalDue += Number(det.totalDue || 0);
+        principalOpen += Number(det.principal || 0);
+        interestOpen += Number(det.totalInterestPending || 0);
+        penaltyOpen += Number(det.accumulatedPenalty || 0);
+        if (isOverdue) { overdueCount++; overdueAmount += Number(det.totalDue || 0); }
+      });
+      const pendingCount = installments.filter(i => i.status_inst !== 'pago').length;
+      const nextPending = installments.find(i => i.status_inst !== 'pago') || null;
+      return { installments, totalDue, principalOpen, interestOpen, penaltyOpen, overdueCount, overdueAmount, pendingCount, nextPending };
+    }
+    function mvOpenInstallmentCharge(instId) {
+      const inst = DB.getInstallmentById(instId);
+      if (!inst) return Utils.toast('Parcela não encontrada', 'error');
+      activeModal = { type:'message', loanKey: inst.loan_id_inst, instId };
+      render();
+    }
+    function mvBuildChargeMessage(loan, installment = null) {
+      const client = DB.getClientById(loan.client_id);
+      const pix = DB.getConfig('pix_key', 'Não configurado');
+      const bizName = DB.getConfig('business_name', 'MV Financeira');
+      const calcLabel = Finance.isProportionalLoan(loan) ? 'Saldo corrido proporcional' : (loan.calculation_mode === 'parcela_fixa' ? 'Parcela fixa' : 'Tabela Price');
+      if (installment) {
+        const det = Finance.calcInstallmentDetails(installment, Utils.today());
+        const atraso = det.daysLate > 0 ? `\n⚠️ Atraso: ${det.daysLate} dia(s)` : '';
+        const multa = det.accumulatedPenalty > 0 ? `\nMulta em aberto: ${Utils.fmtMoney(det.accumulatedPenalty)}` : '';
+        return `Olá, ${client?.name || 'cliente'}!\n\nSegue a cobrança da parcela #${installment.number} do seu contrato com a ${bizName}.\n\n📌 PARCELA #${installment.number}\nVencimento: ${Utils.fmtDate(installment.due_date)}${atraso}\nPrincipal em aberto: ${Utils.fmtMoney(det.principal)}\nJuros em aberto: ${Utils.fmtMoney(det.totalInterestPending)}${multa}\n\n💰 TOTAL DA PARCELA: ${Utils.fmtMoney(det.totalDue)}\n\nPIX: ${pix}\n\nApós o pagamento, envie o comprovante para baixa no sistema.\n\nAtenciosamente,\n${bizName}`;
+      }
+      const summary = mvGetLoanSummary(loan);
+      const next = summary.nextPending;
+      const nextText = next ? `\n\nPróxima parcela em aberto: #${next.number}\nVencimento: ${Utils.fmtDate(next.due_date)}\nValor atual da parcela: ${Utils.fmtMoney(Finance.calcInstallmentDetails(next).totalDue)}` : '';
+      const atrasoText = summary.overdueCount > 0 ? `\n⚠️ Parcelas em atraso: ${summary.overdueCount}\nValor em atraso: ${Utils.fmtMoney(summary.overdueAmount)}` : '';
+      return `Olá, ${client?.name || 'cliente'}!\n\nSegue o resumo atualizado do seu contrato com a ${bizName}.\n\n🏦 CONTRATO\nTipo: ${calcLabel}\nValor contratado: ${Utils.fmtMoney(loan.amount)}\nValor devido atual: ${Utils.fmtMoney(summary.totalDue)}\nPrincipal em aberto: ${Utils.fmtMoney(summary.principalOpen)}\nJuros em aberto: ${Utils.fmtMoney(summary.interestOpen)}\nMulta em aberto: ${Utils.fmtMoney(summary.penaltyOpen)}${atrasoText}${nextText}\n\n💰 FORMA DE PAGAMENTO\nPIX: ${pix}\n\nApós pagar, envie o comprovante para baixa no sistema.\n\nAtenciosamente,\n${bizName}`;
+    }
 
     const DB = {
       getConfig: (key, def='') => db.configs?.[key] ?? def,
@@ -1554,6 +1612,19 @@
         render();
       },
 
+      reinvestAporteProfit: (apId) => {
+        const ap = DB.getInvestorAporteById(apId);
+        if (!ap) return Utils.toast('Aporte não encontrado', 'error');
+        const calc = InvestorFinance.calcAporte(ap);
+        const profit = Finance.round2(calc.profit || 0);
+        if (calc.days < 30) return Utils.toast('Reaporte liberado somente após 30 dias.', 'error');
+        if (profit <= 0.009) return Utils.toast('Ainda não há lucro para reaportar.', 'error');
+        DB.addInvestorPayment({ id: Utils.uid(), type: 'investor_payment', investor_id: ap.investor_id, amount: profit, date: Utils.today(), notes: 'Lucro reaportado automaticamente do aporte de ' + Utils.fmtDate(ap.date) });
+        DB.addInvestorAporte({ id: Utils.uid(), type: 'investor_aporte', investor_id: ap.investor_id, amount: profit, date: Utils.today(), notes: 'Reaporte de lucro gerado pelo aporte original de ' + Utils.fmtDate(ap.date) });
+        Utils.toast('Lucro reaportado como novo aporte!', 'success');
+        render();
+      },
+
       deleteInvestor: (investorId) => {
         DB.deleteInvestor(investorId);
         Utils.toast('Investidor excluído', 'success');
@@ -2240,50 +2311,21 @@
       if (editingClient !== null) return renderClientForm();
       if (viewingClient) return renderClientDetail();
       const clients = DB.getClients();
-      const normalizeSearch = (text) => String(text || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-      const safeSearch = String(clientSearchQuery || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;');
-      const searchTerm = normalizeSearch(clientSearchQuery);
-      const filteredClients = searchTerm
-        ? clients.filter(c => {
-            const searchable = normalizeSearch(`${c.name || ''} ${c.cpf || ''} ${c.phone || ''}`);
-            return searchable.includes(searchTerm);
-          })
-        : clients;
+      const safeSearch = mvEscapeHtml(clientSearchQuery);
+      const searchTerm = mvNormalizeText(clientSearchQuery);
+      const filteredClients = searchTerm ? clients.filter(c => mvNormalizeText(`${c.name || ''} ${c.cpf || ''} ${c.phone || ''}`).includes(searchTerm)) : clients;
       return `<div class="fade-in">
-        <div class="mv-section-header">
-          <div class="min-w-0">
-            <h2 class="mv-page-title font-bold">Clientes <span class="text-slate-500 text-base align-middle">(${filteredClients.length}/${clients.length})</span></h2>
-            <p class="text-sm text-slate-400 mt-1">Busque por nome, CPF ou telefone.</p>
-          </div>
-          <button onclick="editingClient={};render()" class="btn-gold py-2 px-4 flex items-center justify-center gap-2"><i data-lucide="plus" class="w-5 h-5"></i> Novo Cliente</button>
-        </div>
-
-        <div class="card mv-search-card mb-4">
-          <label class="text-xs text-slate-400 mb-2 block">Pesquisar cliente</label>
-          <div class="flex gap-2 items-center">
-            <div class="mv-search-inner flex-1">
-              <span class="mv-search-icon">⌕</span>
-              <input class="mv-search-input input-field" id="client-search" value="${safeSearch}" placeholder="Nome, CPF ou telefone" oninput="clientSearchQuery=this.value;render()" autocomplete="off">
-            </div>
-            ${clientSearchQuery ? `<button onclick="clientSearchQuery='';render()" class="mv-search-clear btn-outline text-sm">Limpar</button>` : ''}
-          </div>
-        </div>
-
-        ${clients.length === 0 ? '<p class="text-slate-500 text-center py-8">Nenhum cliente cadastrado</p>' : filteredClients.length === 0 ? '<p class="text-slate-500 text-center py-8">Nenhum cliente encontrado com essa pesquisa.</p>' : `<div class="space-y-3">${filteredClients.map(c => `<div class="card card-hover mv-client-card" onclick="viewingClient='${c.id}';render()">
-          <div class="mv-client-row">
-            <div class="min-w-0">
-              <p class="mv-client-name font-semibold">${c.name}</p>
-              <p class="mv-client-meta">${c.cpf}${c.phone ? ' • ' + c.phone : ''}</p>
-            </div>
-            <div class="mv-client-actions">
-              <span class="badge ${c.status==='ativo'?'badge-active':'badge-inactive'}">${c.status}</span>
-              <i data-lucide="chevron-right" class="text-slate-400"></i>
-            </div>
-          </div>
-        </div>`).join('')}</div>`}
+        <div class="mv-section-header"><div class="min-w-0"><h2 class="mv-page-title font-bold">Clientes <span class="text-slate-500 text-base align-middle">(${filteredClients.length}/${clients.length})</span></h2><p class="text-sm text-slate-400 mt-1">Busca otimizada por nome, CPF ou telefone.</p></div><button onclick="editingClient={};render()" class="btn-gold py-2 px-4 flex items-center justify-center gap-2"><i data-lucide="plus" class="w-5 h-5"></i> Novo Cliente</button></div>
+        <div class="card mv-search-card mb-4"><label class="text-xs text-slate-400 mb-2 block">Pesquisar cliente</label><div class="flex gap-2 items-center"><div class="mv-search-inner flex-1"><span class="mv-search-icon">⌕</span><input class="mv-search-input input-field" id="client-search" value="${safeSearch}" placeholder="Nome, CPF ou telefone" oninput="clientSearchQuery=this.value;mvDebouncedRender('clients',220)" autocomplete="off"></div>${clientSearchQuery ? `<button onclick="clientSearchQuery='';render()" class="mv-search-clear btn-outline text-sm">Limpar</button>` : ''}</div><p class="text-[11px] text-slate-500 mt-2">Agora a lista só atualiza após uma pausa na digitação, evitando travamento.</p></div>
+        ${clients.length === 0 ? '<p class="text-slate-500 text-center py-8">Nenhum cliente cadastrado</p>' : filteredClients.length === 0 ? '<p class="text-slate-500 text-center py-8">Nenhum cliente encontrado com essa pesquisa.</p>' : `<div class="space-y-3">${filteredClients.map(c => {
+          const loans = DB.getLoansByClient(c.id);
+          const activeLoans = loans.filter(l => l.status_loan === 'ativo');
+          const overdue = activeLoans.reduce((sum, loan) => sum + mvGetLoanSummary(loan).overdueCount, 0);
+          const dueTotal = activeLoans.reduce((sum, loan) => sum + mvGetLoanSummary(loan).totalDue, 0);
+          return `<div class="card card-hover mv-client-card ${overdue > 0 ? 'border-red-500/40 bg-red-500/5' : ''}" onclick="viewingClient='${c.id}';render()"><div class="mv-client-row"><div class="min-w-0"><p class="mv-client-name font-semibold">${mvEscapeHtml(c.name)}</p><p class="mv-client-meta">${mvEscapeHtml(c.cpf)}${c.phone ? ' • ' + mvEscapeHtml(c.phone) : ''}</p><p class="text-xs mt-1 ${overdue > 0 ? 'text-red-300 font-semibold' : 'text-slate-500'}">${activeLoans.length} empréstimo(s) ativo(s) • Valor devido: ${Utils.fmtMoney(dueTotal)}${overdue > 0 ? ' • ' + overdue + ' parcela(s) em atraso' : ''}</p></div><div class="mv-client-actions"><span class="badge ${overdue > 0 ? 'badge-overdue' : c.status==='ativo'?'badge-active':'badge-inactive'}">${overdue > 0 ? 'ATRASO' : c.status}</span><i data-lucide="chevron-right" class="text-slate-400"></i></div></div></div>`;
+        }).join('')}</div>`}
       </div>`;
     }
-
     function renderClientForm() {
       const c = editingClient || {};
       const isEdit = !!c.id;
@@ -2422,139 +2464,40 @@
       const calc = InvestorFinance.calcInvestor(inv);
       const aportes = DB.getAportesByInvestor(inv.id);
       const payments = DB.getInvestorPayments(inv.id);
-      return `<div>
-        <button onclick="viewingInvestor=null;render()" class="text-gold-500 flex items-center gap-1 text-sm mb-4"><i data-lucide="arrow-left" class="w-4 h-4"></i> Voltar</button>
-        <div class="card p-4 mb-4">
-          <div class="flex items-center justify-between mb-3">
-            <div><h2 class="font-semibold text-lg">${inv.name}</h2><p class="text-xs text-slate-400">${inv.cpf} • ${Number(inv.daily_rate||0).toFixed(2)}% ao dia</p></div>
-            <span class="badge ${inv.status==='ativo'?'badge-active':'badge-inactive'}">${inv.status || 'ativo'}</span>
-          </div>
-          <div class="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center text-sm">
-            <div class="stat-card"><p class="text-xs text-slate-400">Investido</p><p class="font-bold text-gold-400">${Utils.fmtMoney(calc.invested)}</p></div>
-            <div class="stat-card"><p class="text-xs text-slate-400">Lucro Gerado</p><p class="font-bold text-green-400">${Utils.fmtMoney(calc.profit)}</p></div>
-            <div class="stat-card"><p class="text-xs text-slate-400">Saldo Bruto</p><p class="font-bold text-gold-400">${Utils.fmtMoney(calc.grossBalance)}</p></div>
-            <div class="stat-card"><p class="text-xs text-slate-400">Já Pago</p><p class="font-bold text-green-400">${Utils.fmtMoney(calc.paid)}</p></div>
-            <div class="stat-card"><p class="text-xs text-slate-400">Lucro Disponível</p><p class="font-bold text-yellow-400">${Utils.fmtMoney(calc.availableProfit)}</p></div>
-          </div>
-          <div class="flex gap-2 mt-3">
-            <button onclick="editingInvestor=JSON.parse(JSON.stringify(DB.getInvestorById('${inv.id}')));viewingInvestor=null;render()" class="btn-outline py-2 px-3 text-xs flex-1">Editar</button>
-            <button onclick="confirmAction={type:'deleteInvestor',id:'${inv.id}',name:'${inv.name}'};render()" class="btn-danger py-2 px-3 text-xs">Excluir</button>
-          </div>
-        </div>
-
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-          <div class="card p-4">
-            <h3 class="font-semibold mb-3">Adicionar Aporte</h3>
-            <form onsubmit="Crud.saveInvestorAporte(event,'${inv.id}')" class="space-y-2">
-              <input type="number" step="0.01" min="0.01" id="ia-amount" class="input-field" placeholder="Valor do aporte" required>
-              <input type="date" id="ia-date" class="input-field" value="${Utils.today()}">
-              <input id="ia-notes" class="input-field" placeholder="Observação opcional">
-              <button class="btn-gold w-full py-2">Salvar aporte</button>
-            </form>
-          </div>
-          <div class="card p-4">
-            <h3 class="font-semibold mb-3">Pagar Investidor</h3>
-            <form onsubmit="Crud.saveInvestorPayment(event,'${inv.id}')" class="space-y-2">
-              <input type="number" step="0.01" min="0.01" id="ip-amount" class="input-field" placeholder="Valor pago" required>
-              <input type="date" id="ip-date" class="input-field" value="${Utils.today()}">
-              <input id="ip-notes" class="input-field" placeholder="Observação opcional">
-              <button class="btn-gold w-full py-2">Registrar pagamento</button>
-            </form>
-          </div>
-        </div>
-
-        <h3 class="font-semibold mb-2">Aportes (${aportes.length})</h3>
-        ${aportes.length === 0 ? '<p class="text-slate-500 text-sm mb-4">Nenhum aporte registrado</p>' : aportes.map(ap => {
-          const c = InvestorFinance.calcAporte(ap);
-          return `<div class="card p-3 mb-2">
-            <div class="flex justify-between items-start gap-3">
-              <div>
-                <p class="text-sm font-medium">${Utils.fmtMoney(c.amount)} • ${Utils.fmtDate(ap.date)}</p>
-                <p class="text-xs text-slate-400">${c.days} dias • Lucro: ${Utils.fmtMoney(c.profit)} • Saldo: ${Utils.fmtMoney(c.total)}</p>
-                ${ap.notes ? `<p class="text-xs text-slate-500">Obs: ${ap.notes}</p>` : ''}
-              </div>
-              <button onclick="confirmAction={type:'deleteInvestorAporte',id:'${ap.id}',amount:'${Utils.fmtMoney(ap.amount)}'};render()" class="btn-danger py-1 px-2 text-xs flex items-center gap-1"><i data-lucide="trash-2" class="w-3 h-3"></i> Excluir</button>
-            </div>
-          </div>`;
-        }).join('')}
-
-        <h3 class="font-semibold mb-2 mt-4">Pagamentos ao Investidor (${payments.length})</h3>
-        ${payments.length === 0 ? '<p class="text-slate-500 text-sm">Nenhum pagamento registrado</p>' : payments.map(p => `<div class="card p-3 mb-2">
-          <div class="flex justify-between items-start gap-3">
-            <div>
-              <p class="text-sm font-medium">${Utils.fmtMoney(p.amount)} • ${Utils.fmtDate(p.date)}</p>
-              ${p.notes ? `<p class="text-xs text-slate-500">Obs: ${p.notes}</p>` : ''}
-            </div>
-            <button onclick="confirmAction={type:'deleteInvestorPayment',id:'${p.id}',amount:'${Utils.fmtMoney(p.amount)}'};render()" class="btn-danger py-1 px-2 text-xs flex items-center gap-1"><i data-lucide="trash-2" class="w-3 h-3"></i> Excluir</button>
-          </div>
-        </div>`).join('')}
-      </div>`;
+      return `<div><button onclick="viewingInvestor=null;render()" class="text-gold-500 flex items-center gap-1 text-sm mb-4"><i data-lucide="arrow-left" class="w-4 h-4"></i> Voltar</button><div class="card p-4 mb-4"><div class="flex items-center justify-between mb-3"><div><h2 class="font-semibold text-lg">${mvEscapeHtml(inv.name)}</h2><p class="text-xs text-slate-400">${mvEscapeHtml(inv.cpf)} • ${Number(inv.daily_rate||0).toFixed(2)}% ao dia</p></div><span class="badge ${inv.status==='ativo'?'badge-active':'badge-inactive'}">${inv.status || 'ativo'}</span></div><div class="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center text-sm"><div class="stat-card"><p class="text-xs text-slate-400">Investido</p><p class="font-bold text-gold-400">${Utils.fmtMoney(calc.invested)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Lucro Gerado</p><p class="font-bold text-green-400">${Utils.fmtMoney(calc.profit)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Saldo Bruto</p><p class="font-bold text-gold-400">${Utils.fmtMoney(calc.grossBalance)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Já Pago/Reaportado</p><p class="font-bold text-green-400">${Utils.fmtMoney(calc.paid)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Lucro Disponível</p><p class="font-bold text-yellow-400">${Utils.fmtMoney(calc.availableProfit)}</p></div></div><div class="flex gap-2 mt-3"><button onclick="editingInvestor=JSON.parse(JSON.stringify(DB.getInvestorById('${inv.id}')));viewingInvestor=null;render()" class="btn-outline py-2 px-3 text-xs flex-1">Editar</button><button onclick="confirmAction={type:'deleteInvestor',id:'${inv.id}',name:'${mvEscapeJs(inv.name)}'};render()" class="btn-danger py-2 px-3 text-xs">Excluir</button></div></div><div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4"><div class="card p-4"><h3 class="font-semibold mb-3">Adicionar Aporte</h3><form onsubmit="Crud.saveInvestorAporte(event,'${inv.id}')" class="space-y-2"><input type="number" step="0.01" min="0.01" id="ia-amount" class="input-field" placeholder="Valor do aporte" required><input type="date" id="ia-date" class="input-field" value="${Utils.today()}"><input id="ia-notes" class="input-field" placeholder="Observação opcional"><button class="btn-gold w-full py-2">Salvar aporte</button></form></div><div class="card p-4"><h3 class="font-semibold mb-3">Pagar Investidor</h3><form onsubmit="Crud.saveInvestorPayment(event,'${inv.id}')" class="space-y-2"><input type="number" step="0.01" min="0.01" id="ip-amount" class="input-field" placeholder="Valor pago" required><input type="date" id="ip-date" class="input-field" value="${Utils.today()}"><input id="ip-notes" class="input-field" placeholder="Observação opcional"><button class="btn-gold w-full py-2">Registrar pagamento</button></form></div></div><h3 class="font-semibold mb-2">Aportes (${aportes.length})</h3>${aportes.length === 0 ? '<p class="text-slate-500 text-sm mb-4">Nenhum aporte registrado</p>' : `<div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">${aportes.map(ap => { const c = InvestorFinance.calcAporte(ap); const canReinvest = c.days >= 30 && c.profit > 0.009; return `<div class="card p-4 ${canReinvest ? 'border-green-500/30 bg-green-500/5' : ''}"><div class="flex items-start justify-between gap-3 mb-3"><div class="min-w-0"><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(c.amount)}</p><p class="text-xs text-slate-400">Aporte em ${Utils.fmtDate(ap.date)} • ${c.days} dia(s)</p>${ap.notes ? `<p class="text-xs text-slate-500 mt-1">Obs: ${mvEscapeHtml(ap.notes)}</p>` : ''}</div><span class="badge ${canReinvest ? 'badge-active' : 'badge-pending'}">${canReinvest ? '30d+' : c.days + 'd'}</span></div><div class="grid grid-cols-2 gap-2 text-center mb-3"><div class="stat-card"><p class="text-[11px] text-slate-400">Juros Gerado</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(c.profit)}</p></div><div class="stat-card"><p class="text-[11px] text-slate-400">Saldo do Aporte</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(c.total)}</p></div></div><div class="flex gap-2 flex-wrap">${canReinvest ? `<button onclick="Crud.reinvestAporteProfit('${ap.id}')" class="btn-gold py-2 px-3 text-xs flex-1">Reaportar lucro</button>` : `<button disabled class="btn-outline py-2 px-3 text-xs flex-1 opacity-50 cursor-not-allowed">Reaportar após 30 dias</button>`}<button onclick="confirmAction={type:'deleteInvestorAporte',id:'${ap.id}',amount:'${Utils.fmtMoney(ap.amount)}'};render()" class="btn-danger py-2 px-3 text-xs flex items-center gap-1"><i data-lucide="trash-2" class="w-3 h-3"></i></button></div></div>`; }).join('')}</div>`}<h3 class="font-semibold mb-2 mt-4">Pagamentos/Reaportes (${payments.length})</h3>${payments.length === 0 ? '<p class="text-slate-500 text-sm">Nenhum pagamento registrado</p>' : payments.map(p => `<div class="card p-3 mb-2"><div class="flex justify-between items-start gap-3"><div><p class="text-sm font-medium">${Utils.fmtMoney(p.amount)} • ${Utils.fmtDate(p.date)}</p>${p.notes ? `<p class="text-xs text-slate-500">Obs: ${mvEscapeHtml(p.notes)}</p>` : ''}</div><button onclick="confirmAction={type:'deleteInvestorPayment',id:'${p.id}',amount:'${Utils.fmtMoney(p.amount)}'};render()" class="btn-danger py-1 px-2 text-xs flex items-center gap-1"><i data-lucide="trash-2" class="w-3 h-3"></i> Excluir</button></div></div>`).join('')}</div>`;
     }
-
     function renderLoansTab() {
       if (editingLoan !== null) return renderLoanForm();
       if (viewingLoan) return renderLoanDetail();
       const loans = DB.getLoans();
-      const grouped = loans.reduce((acc, loan) => {
-        const key = loan.client_id || 'sem-cliente';
-        if (!acc[key]) acc[key] = [];
-        acc[key].push(loan);
-        return acc;
-      }, {});
+      const safeSearch = mvEscapeHtml(loanSearchQuery);
+      const searchTerm = mvNormalizeText(loanSearchQuery);
+      const filteredLoans = searchTerm ? loans.filter(l => {
+        const client = DB.getClientById(l.client_id);
+        const summary = mvGetLoanSummary(l);
+        const statusText = summary.overdueCount > 0 ? 'atraso atrasado vermelho' : 'em dia ativo quitado';
+        return mvNormalizeText(`${client?.name || ''} ${client?.cpf || ''} ${client?.phone || ''} ${l.loan_id || ''} ${l.amount || ''} ${statusText}`).includes(searchTerm);
+      }) : loans;
+      const grouped = filteredLoans.reduce((acc, loan) => { const key = loan.client_id || 'sem-cliente'; if (!acc[key]) acc[key] = []; acc[key].push(loan); return acc; }, {});
       const clientGroups = Object.keys(grouped).map(clientId => {
         const client = DB.getClientById(clientId);
         const clientLoans = grouped[clientId].sort((a,b) => new Date(b.date || '1900-01-01') - new Date(a.date || '1900-01-01'));
         const totalAmount = clientLoans.reduce((sum, l) => sum + Number(l.amount || 0), 0);
+        const totalDue = clientLoans.reduce((sum, l) => sum + mvGetLoanSummary(l).totalDue, 0);
+        const overdueCount = clientLoans.reduce((sum, l) => sum + mvGetLoanSummary(l).overdueCount, 0);
         const activeCount = clientLoans.filter(l => l.status_loan === 'ativo').length;
         const paidCount = clientLoans.filter(l => l.status_loan === 'quitado').length;
         const lastLoanDate = clientLoans[0]?.date || '';
-        return { clientId, client, clientLoans, totalAmount, activeCount, paidCount, lastLoanDate };
-      }).sort((a,b) => new Date(b.lastLoanDate || '1900-01-01') - new Date(a.lastLoanDate || '1900-01-01'));
-
-      const renderLoanCard = (l, compact=false) => `<div class="card ${compact ? '' : 'card-hover'} p-${compact ? '3' : '4'} mb-3 ${compact ? 'ml-0 sm:ml-6 border-gold-800/20' : ''}" onclick="viewingLoan='${l.id}';adminTab='loans';render()">
-          <div class="flex items-center justify-between gap-3">
-            <div class="min-w-0">
-              ${!compact ? `<p class="font-semibold">${DB.getClientById(l.client_id)?.name || 'Cliente'}</p>` : `<p class="text-xs text-slate-400">Empréstimo #${String(l.loan_id || '').slice(-5).toUpperCase()}</p>`}
-              <p class="text-sm text-gold-400">${Utils.fmtMoney(l.amount)} • ${l.calculation_mode==='proporcional'?'Saldo corrido':(l.calculation_mode==='parcela_fixa'?'Parcela fixa':(l.num_installments+'x '+l.frequency))} • ${Number(l.rate_used||0).toFixed(2)}%</p>
-              <p class="text-xs text-slate-400">Criado em ${Utils.fmtDate(l.date)}</p>
-            </div>
-            <span class="badge ${l.status_loan==='ativo'?'badge-active':'badge-paid'} shrink-0">${l.status_loan}</span>
-          </div>
-        </div>`;
-
-      return `<div>
-        <div class="flex items-center justify-between mb-4">
-          <h2 class="text-lg font-semibold">Empréstimos <span class="text-slate-500 text-sm">(${loans.length})</span></h2>
-          <button onclick="editingLoan={};render()" class="btn-gold py-2 px-4 text-sm flex items-center gap-1"><i data-lucide="plus" class="w-4 h-4"></i> Novo</button>
-        </div>
-        ${loans.length === 0 ? '<p class="text-slate-500 text-center py-8">Nenhum empréstimo</p>' : clientGroups.map(group => {
-          if (group.clientLoans.length === 1) return renderLoanCard(group.clientLoans[0]);
-          const open = !!expandedLoanFolders[group.clientId];
-          return `<div class="card p-4 mb-3">
-            <div class="flex items-center justify-between gap-3 cursor-pointer" onclick="expandedLoanFolders['${group.clientId}'] = !expandedLoanFolders['${group.clientId}']; render()">
-              <div class="flex items-center gap-3 min-w-0">
-                <div class="w-10 h-10 rounded-xl bg-gold-500/15 border border-gold-500/25 flex items-center justify-center shrink-0">
-                  <i data-lucide="${open ? 'folder-open' : 'folder'}" class="w-5 h-5 text-gold-400"></i>
-                </div>
-                <div class="min-w-0">
-                  <p class="font-semibold truncate">${group.client?.name || 'Cliente sem cadastro'}</p>
-                  <p class="text-xs text-slate-400">${group.clientLoans.length} empréstimos • ${group.activeCount} ativos • ${group.paidCount} quitados</p>
-                  <p class="text-sm text-gold-400">Total emprestado: ${Utils.fmtMoney(group.totalAmount)}</p>
-                </div>
-              </div>
-              <div class="flex items-center gap-2 shrink-0">
-                <span class="badge ${group.activeCount > 0 ? 'badge-active' : 'badge-paid'}">${group.activeCount > 0 ? 'ativo' : 'quitado'}</span>
-                <i data-lucide="${open ? 'chevron-up' : 'chevron-down'}" class="w-4 h-4 text-slate-400"></i>
-              </div>
-            </div>
-            ${open ? `<div class="mt-4 pt-3 border-t border-gold-800/20">
-              ${group.clientLoans.map(l => renderLoanCard(l, true)).join('')}
-            </div>` : ''}
-          </div>`;
-        }).join('')}
-      </div>`;
+        return { clientId, client, clientLoans, totalAmount, totalDue, overdueCount, activeCount, paidCount, lastLoanDate };
+      }).sort((a,b) => (b.overdueCount - a.overdueCount) || new Date(b.lastLoanDate || '1900-01-01') - new Date(a.lastLoanDate || '1900-01-01'));
+      const renderLoanCard = (l, compact=false) => {
+        const summary = mvGetLoanSummary(l);
+        const overdue = summary.overdueCount > 0;
+        const client = DB.getClientById(l.client_id);
+        return `<div class="card ${compact ? '' : 'card-hover'} p-${compact ? '3' : '4'} mb-3 ${compact ? 'ml-0 sm:ml-6 border-gold-800/20' : ''} ${overdue ? 'border-red-500/40 bg-red-500/5' : ''}" onclick="viewingLoan='${l.id}';adminTab='loans';render()"><div class="flex items-center justify-between gap-3"><div class="min-w-0">${!compact ? `<p class="font-semibold truncate">${mvEscapeHtml(client?.name || 'Cliente')}</p>` : `<p class="text-xs text-slate-400">Empréstimo #${String(l.loan_id || '').slice(-5).toUpperCase()}</p>`}<p class="text-sm text-gold-400">${Utils.fmtMoney(l.amount)} • ${l.calculation_mode==='proporcional'?'Saldo corrido':(l.calculation_mode==='parcela_fixa'?'Parcela fixa':(l.num_installments+'x '+l.frequency))} • ${Number(l.rate_used||0).toFixed(2)}%</p><p class="text-xs ${overdue ? 'text-red-300 font-semibold' : 'text-slate-400'}">${overdue ? '⚠ ' + summary.overdueCount + ' parcela(s) em atraso • ' + Utils.fmtMoney(summary.overdueAmount) : 'Criado em ' + Utils.fmtDate(l.date)}</p><p class="text-xs text-slate-500">Valor devido: ${Utils.fmtMoney(summary.totalDue)} • Pendentes: ${summary.pendingCount}</p></div><span class="badge ${overdue ? 'badge-overdue' : l.status_loan==='ativo'?'badge-active':'badge-paid'} shrink-0">${overdue ? 'ATRASO' : l.status_loan}</span></div></div>`;
+      };
+      return `<div><div class="flex items-center justify-between mb-4 gap-3"><h2 class="text-lg font-semibold">Empréstimos <span class="text-slate-500 text-sm">(${filteredLoans.length}/${loans.length})</span></h2><button onclick="editingLoan={};render()" class="btn-gold py-2 px-4 text-sm flex items-center gap-1"><i data-lucide="plus" class="w-4 h-4"></i> Novo</button></div><div class="card mv-search-card mb-4"><label class="text-xs text-slate-400 mb-2 block">Buscar empréstimo</label><div class="mv-search-inner"><span class="mv-search-icon">⌕</span><input class="mv-search-input input-field" value="${safeSearch}" placeholder="Cliente, CPF, código, valor ou atraso" oninput="loanSearchQuery=this.value;mvDebouncedRender('loans',220)" autocomplete="off">${loanSearchQuery ? `<button onclick="loanSearchQuery='';render()" class="btn-outline text-xs py-1 px-2">Limpar</button>` : ''}</div></div>${loans.length === 0 ? '<p class="text-slate-500 text-center py-8">Nenhum empréstimo</p>' : filteredLoans.length === 0 ? '<p class="text-slate-500 text-center py-8">Nenhum empréstimo encontrado.</p>' : clientGroups.map(group => { const open = !!expandedLoanFolders[group.clientId] || loanSearchQuery; return `<div class="card p-4 mb-3 ${group.overdueCount > 0 ? 'border-red-500/40 bg-red-500/5' : ''}"><div class="flex items-center justify-between gap-3 cursor-pointer" onclick="expandedLoanFolders['${group.clientId}'] = !expandedLoanFolders['${group.clientId}']; render()"><div class="flex items-center gap-3 min-w-0"><div class="w-10 h-10 rounded-xl ${group.overdueCount > 0 ? 'bg-red-500/15 border border-red-500/30' : 'bg-gold-500/15 border border-gold-500/25'} flex items-center justify-center shrink-0"><i data-lucide="${open ? 'folder-open' : 'folder'}" class="w-5 h-5 ${group.overdueCount > 0 ? 'text-red-300' : 'text-gold-400'}"></i></div><div class="min-w-0"><p class="font-semibold truncate">${mvEscapeHtml(group.client?.name || 'Cliente sem cadastro')}</p><p class="text-xs ${group.overdueCount > 0 ? 'text-red-300 font-semibold' : 'text-slate-400'}">${group.clientLoans.length} empréstimos • ${group.activeCount} ativos • ${group.paidCount} quitados${group.overdueCount > 0 ? ' • ' + group.overdueCount + ' atraso(s)' : ''}</p><p class="text-sm text-gold-400">Emprestado: ${Utils.fmtMoney(group.totalAmount)} • Devido: ${Utils.fmtMoney(group.totalDue)}</p></div></div><div class="flex items-center gap-2 shrink-0"><span class="badge ${group.overdueCount > 0 ? 'badge-overdue' : group.activeCount > 0 ? 'badge-active' : 'badge-paid'}">${group.overdueCount > 0 ? 'ATRASO' : group.activeCount > 0 ? 'ativo' : 'quitado'}</span><i data-lucide="${open ? 'chevron-up' : 'chevron-down'}" class="w-4 h-4 text-slate-400"></i></div></div>${open ? `<div class="mt-4 pt-3 border-t border-gold-800/20">${group.clientLoans.map(l => renderLoanCard(l, true)).join('')}</div>` : ''}</div>`; }).join('')}</div>`;
     }
-
     function renderDeleteLoansTab() {
       const loans = DB.getLoans();
       if (!loans.length) return '<p class="text-slate-500 text-center py-8">Nenhum empréstimo para excluir</p>';
@@ -2738,7 +2681,7 @@
             <div class="stat-card"><p class="text-xs text-slate-400">Baixa Total no Contrato</p><p class="font-bold text-gold-400">${Utils.fmtMoney(totalPaymentReceived + totalAnticipationDiscount)}</p><p class="text-[10px] text-slate-500 mt-1">Recebido + desconto</p></div>
           </div>
           <div class="flex gap-2 mt-3">
-            <button onclick="activeModal={type:'message',loanKey:'${loan.loan_id}'};render()" class="btn-outline flex-1 py-2 text-sm flex items-center justify-center gap-1"><i data-lucide="message-circle" class="w-4 h-4"></i> Msg</button>
+            <button onclick="activeModal={type:'message',loanKey:'${loan.loan_id}'};render()" class="btn-outline flex-1 py-2 text-sm flex items-center justify-center gap-1"><i data-lucide="message-circle" class="w-4 h-4"></i> Cobrar contrato</button>
             <button onclick="confirmAction={type:'recalcLoan',loanKey:'${loan.loan_id}',clientName:'${DB.getClientById(loan.client_id)?.name || 'Cliente'}',amount:'${Utils.fmtMoney(loan.amount)}'};render()" class="btn-outline flex-1 py-2 text-sm flex items-center justify-center gap-1"><i data-lucide="refresh-cw" class="w-4 h-4"></i> Sincronizar histórico</button>
             <button onclick="confirmAction={type:'deleteLoan',id:'${loan.id}',loanKey:'${loan.loan_id}',clientName:'${DB.getClientById(loan.client_id)?.name || 'Cliente'}',amount:'${Utils.fmtMoney(loan.amount)}'};render()" class="btn-danger py-2 px-3 text-sm flex items-center gap-1"><i data-lucide="trash-2" class="w-4 h-4"></i> Excluir</button>
           </div>
@@ -2761,7 +2704,7 @@
               </div>
               <div class="flex flex-row sm:flex-col items-stretch sm:items-end gap-2 w-full sm:w-auto">
                 <span class="badge ${isPaid?'badge-paid':isOverdue?'badge-overdue':'badge-pending'} justify-center">${inst.status_antecipacao === 'quitada_antecipada' ? 'Quitada antecipada' : inst.status_antecipacao === 'parcialmente_antecipada' ? 'Parcial antecipada' : isPaid?'Pago':isOverdue?'Atraso':'Pendente'}</span>
-                ${!isPaid ? `<button type="button" onclick="event.preventDefault();event.stopPropagation();activeModal={type:'payment',instId:'${inst.id}'};render();" class="btn-gold py-2 px-4 text-xs font-bold whitespace-nowrap flex-1 sm:flex-none">Registrar pagamento</button>` : ''}
+                ${!isPaid ? `<button type="button" onclick="event.preventDefault();event.stopPropagation();activeModal={type:'payment',instId:'${inst.id}'};render();" class="btn-gold py-2 px-4 text-xs font-bold whitespace-nowrap flex-1 sm:flex-none">Registrar pagamento</button><button type="button" onclick="event.preventDefault();event.stopPropagation();mvOpenInstallmentCharge('${inst.id}')" class="btn-outline py-2 px-4 text-xs font-bold whitespace-nowrap flex-1 sm:flex-none">Cobrar</button>` : ''}
               </div>
             </div>
           </div>`;
@@ -3148,94 +3091,17 @@
     function renderClientPortal() {
       const client = DB.getClientById(clientLoggedIn);
       if (!client) { clientLoggedIn = null; currentScreen = 'home'; return ''; }
-      const loans = DB.getLoansByClient(client.id);
+      const loans = DB.getLoansByClient(client.id).sort((a,b) => { const sa = mvGetLoanSummary(a), sb = mvGetLoanSummary(b); return (sb.overdueCount - sa.overdueCount) || new Date(b.date || '1900-01-01') - new Date(a.date || '1900-01-01'); });
       const pix = DB.getConfig('pix_key', 'Não configurado');
+      const summaries = loans.map(loan => ({ loan, summary: mvGetLoanSummary(loan) }));
       let totalDebt = 0, totalPrincipalOpen = 0, totalInterestOpen = 0, totalPenaltyOpen = 0, totalPaidAll = 0, overdueCount = 0;
-
-      const loanCards = loans.map(loan => {
-        Finance.ensureInstallmentsForLoan(loan);
-        const insts = DB.getInstallmentsByLoan(loan.loan_id);
-        let loanTotalRealDebt = 0, loanPrincipalOpen = 0, loanInterestOpen = 0, loanPenaltyOpen = 0, loanTotalPaidPrincipal = 0, loanTotalPaidInterest = 0, loanTotalPaidPenalty = 0;
-        insts.forEach(inst => {
-          const det = Finance.calcInstallmentDetails(inst);
-          loanTotalRealDebt += det.totalDue;
-          loanPrincipalOpen += Number(det.principal || 0);
-          loanInterestOpen += Number(det.totalInterestPending || 0);
-          loanPenaltyOpen += Number(det.accumulatedPenalty || 0);
-          loanTotalPaidPrincipal += Finance.getPaidTotal(inst, 'principal');
-          loanTotalPaidInterest += Finance.getPaidTotal(inst, 'periodInterest') + Finance.getPaidTotal(inst, 'extraInterest');
-          loanTotalPaidPenalty += Finance.getPaidTotal(inst, 'penalty');
-        });
-        totalDebt += loanTotalRealDebt;
-        totalPrincipalOpen += loanPrincipalOpen;
-        totalInterestOpen += loanInterestOpen;
-        totalPenaltyOpen += loanPenaltyOpen;
-        totalPaidAll += loanTotalPaidPrincipal + loanTotalPaidInterest + loanTotalPaidPenalty;
-
-        return `<div class="card p-4 mb-4">
-          <div class="flex justify-between items-center mb-3">
-            <p class="font-semibold text-gold-400">${Utils.fmtMoney(loan.amount)}</p>
-            <span class="badge ${loan.status_loan==='ativo'?'badge-active':'badge-paid'}">${loan.status_loan}</span>
-          </div>
-          <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 text-center mb-3">
-            <div class="stat-card"><p class="text-xs text-slate-400">Valor Devido</p><p class="text-sm font-bold text-red-400">${Utils.fmtMoney(loanTotalRealDebt)}</p></div>
-            <div class="stat-card"><p class="text-xs text-slate-400">Principal Aberto</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(loanPrincipalOpen)}</p></div>
-            <div class="stat-card"><p class="text-xs text-slate-400">Juros Aberto</p><p class="text-sm font-bold text-yellow-400">${Utils.fmtMoney(loanInterestOpen)}</p></div>
-            <div class="stat-card"><p class="text-xs text-slate-400">Multa Aberta</p><p class="text-sm font-bold text-red-300">${Utils.fmtMoney(loanPenaltyOpen)}</p></div>
-            <div class="stat-card"><p class="text-xs text-slate-400">Principal Pago</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(loanTotalPaidPrincipal)}</p></div>
-            <div class="stat-card"><p class="text-xs text-slate-400">Juros/Multa Pago</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(loanTotalPaidInterest + loanTotalPaidPenalty)}</p></div>
-          </div>
-          <h4 class="text-sm font-semibold mb-2">Parcelas</h4>
-          ${insts.map(inst => {
-            const det = Finance.calcInstallmentDetails(inst);
-            const isPaid = inst.status_inst === 'pago';
-            const isOverdue = !isPaid && det.daysLate > 0;
-            if (isOverdue) overdueCount++;
-            return `<div class="flex justify-between items-center py-2 border-b border-gold-800/10 text-sm gap-3">
-              <div>
-                <p>#${inst.number} - ${Utils.fmtMoney(inst.installment_amount)}</p>
-                <p class="text-xs text-slate-400">Venc: ${Utils.fmtDate(inst.due_date)} ${isOverdue?'('+det.daysLate+'d)':''}</p>
-                <p class="text-xs text-slate-500">Principal Pago: ${Utils.fmtMoney(Finance.getPaidTotal(inst, 'principal'))} | Principal Pendente: ${Utils.fmtMoney(det.principal)}</p>
-                <p class="text-xs text-slate-500">Juros Pagos: ${Utils.fmtMoney(Finance.getPaidTotal(inst, 'periodInterest') + Finance.getPaidTotal(inst, 'extraInterest'))} | Juros Pendentes: ${Utils.fmtMoney(det.totalInterestPending)}</p>
-                ${Number(inst.antecipacao_desconto || 0) > 0 ? `<p class="text-xs text-emerald-300">Desconto por antecipação: ${Utils.fmtMoney(inst.antecipacao_desconto)} • Baixa total: ${Utils.fmtMoney(inst.antecipacao_baixa_total || 0)}</p>` : Number(inst.discount_applied || 0) > 0 ? `<p class="text-xs text-green-300">Desconto aplicado: ${Utils.fmtMoney(inst.discount_applied)}</p>` : ''}
-                ${!isPaid && det.accumulatedPenalty > 0 ? `<p class="text-xs text-red-300">Multa: ${Utils.fmtMoney(det.accumulatedPenalty)} | Multa Paga: ${Utils.fmtMoney(Finance.getPaidTotal(inst, 'penalty'))}</p>` : ''}
-              </div>
-              <div class="flex flex-col items-end gap-2">
-                <span class="badge ${isPaid?'badge-paid':isOverdue?'badge-overdue':'badge-pending'}">${isPaid?'Pago':isOverdue?'Atraso':'Pendente'}</span>
-                ${!isPaid ? `<button type="button" onclick="navigator.clipboard.writeText('${pix.replace(/'/g, "\\'")}');Utils.toast('PIX copiado! Faça o pagamento e envie o comprovante.');" class="btn-gold py-1 px-3 text-xs whitespace-nowrap">Pagar via PIX</button>` : ''}
-              </div>
-            </div>`;
-          }).join('')}
-        </div>`;
-      }).join('');
-
-      return `<div class="flex flex-col h-full w-full fade-in">
-        <header class="flex items-center justify-between px-4 py-3 border-b border-gold-800/20">
-          <div class="flex items-center gap-2">
-            <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-gold-500 to-gold-700 flex items-center justify-center"><i data-lucide="user" class="w-4 h-4 text-navy-900"></i></div>
-            <div><p class="text-sm font-semibold">${client.name}</p><p class="text-xs text-slate-400">${client.cpf}</p></div>
-          </div>
-          <button onclick="clientLoggedIn=null;Utils.clearStates();currentScreen='home';render()" class="text-slate-400 text-xs flex items-center gap-1"><i data-lucide="log-out" class="w-4 h-4"></i></button>
-        </header>
-        <div class="flex-1 overflow-auto p-4">
-          <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4">
-            <div class="stat-card text-center"><p class="text-xs text-slate-400">Valor Devido</p><p class="text-sm font-bold text-red-400">${Utils.fmtMoney(totalDebt)}</p></div>
-            <div class="stat-card text-center"><p class="text-xs text-slate-400">Principal Aberto</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(totalPrincipalOpen)}</p></div>
-            <div class="stat-card text-center"><p class="text-xs text-slate-400">Juros Aberto</p><p class="text-sm font-bold text-yellow-400">${Utils.fmtMoney(totalInterestOpen)}</p></div>
-            <div class="stat-card text-center"><p class="text-xs text-slate-400">Multa Aberta</p><p class="text-sm font-bold text-red-300">${Utils.fmtMoney(totalPenaltyOpen)}</p></div>
-            <div class="stat-card text-center"><p class="text-xs text-slate-400">Total Pago</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(totalPaidAll)}</p></div>
-            <div class="stat-card text-center"><p class="text-xs text-slate-400">Atraso</p><p class="text-sm font-bold text-yellow-400">${overdueCount}</p></div>
-          </div>
-          <div class="card p-3 mb-4 flex items-center gap-2">
-            <i data-lucide="qr-code" class="w-5 h-5 text-gold-400"></i>
-            <div class="flex-1"><p class="text-xs text-slate-400">PIX</p><p class="text-sm font-medium break-all">${pix}</p></div>
-            <button onclick="navigator.clipboard.writeText('${pix.replace(/'/g, "\\'")}');Utils.toast('PIX copiado!')" class="btn-outline py-1 px-2 text-xs">Copiar</button>
-          </div>
-          ${loanCards || '<p class="text-slate-500 text-center">Nenhum empréstimo</p>'}
-        </div>
-      </div>`;
+      summaries.forEach(({summary}) => { totalDebt += summary.totalDue; totalPrincipalOpen += summary.principalOpen; totalInterestOpen += summary.interestOpen; totalPenaltyOpen += summary.penaltyOpen; overdueCount += summary.overdueCount; summary.installments.forEach(inst => { totalPaidAll += Finance.getPaidTotal(inst, 'principal') + Finance.getPaidTotal(inst, 'periodInterest') + Finance.getPaidTotal(inst, 'extraInterest') + Finance.getPaidTotal(inst, 'penalty'); }); });
+      if (loans.length && (!clientPortalSelectedLoan || !loans.some(l => l.loan_id === clientPortalSelectedLoan))) clientPortalSelectedLoan = summaries.find(x => x.summary.pendingCount > 0)?.loan.loan_id || loans[0].loan_id;
+      const selectedPair = summaries.find(x => x.loan.loan_id === clientPortalSelectedLoan) || summaries[0];
+      const loanSelector = summaries.length > 1 ? `<div class="card p-3 mb-4"><p class="text-xs text-slate-400 mb-2">Navegue pelos empréstimos</p><div class="flex gap-2 overflow-x-auto pb-1">${summaries.map(({loan, summary}) => { const active = loan.loan_id === clientPortalSelectedLoan; const overdue = summary.overdueCount > 0; return `<button onclick="clientPortalSelectedLoan='${loan.loan_id}';render()" class="${active ? 'btn-gold' : 'btn-outline'} py-2 px-3 text-xs shrink-0 ${overdue && !active ? 'border-red-500/50 text-red-300' : ''}">#${String(loan.loan_id || '').slice(-4).toUpperCase()} • ${Utils.fmtMoney(summary.totalDue)}${overdue ? ' • ATRASO' : ''}</button>`; }).join('')}</div></div>` : '';
+      const selectedCard = selectedPair ? (() => { const loan = selectedPair.loan; const summary = selectedPair.summary; const overdueLoan = summary.overdueCount > 0; return `<div class="card p-4 mb-4 ${overdueLoan ? 'border-red-500/40 bg-red-500/5' : ''}"><div class="flex justify-between items-start gap-3 mb-3"><div><p class="text-xs text-slate-400">Empréstimo selecionado #${String(loan.loan_id || '').slice(-5).toUpperCase()}</p><p class="font-semibold text-gold-400">${Utils.fmtMoney(loan.amount)}</p><p class="text-xs ${overdueLoan ? 'text-red-300 font-semibold' : 'text-slate-400'}">${loan.calculation_mode==='proporcional'?'Saldo corrido':(loan.calculation_mode==='parcela_fixa'?'Parcela fixa':(loan.num_installments+'x '+loan.frequency))}${overdueLoan ? ' • ' + summary.overdueCount + ' parcela(s) em atraso' : ''}</p></div><span class="badge ${overdueLoan ? 'badge-overdue' : loan.status_loan==='ativo'?'badge-active':'badge-paid'}">${overdueLoan ? 'ATRASO' : loan.status_loan}</span></div><div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center mb-3"><div class="stat-card"><p class="text-xs text-slate-400">Valor Devido</p><p class="text-sm font-bold text-red-400">${Utils.fmtMoney(summary.totalDue)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Principal</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(summary.principalOpen)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Juros</p><p class="text-sm font-bold text-yellow-400">${Utils.fmtMoney(summary.interestOpen)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Multa</p><p class="text-sm font-bold text-red-300">${Utils.fmtMoney(summary.penaltyOpen)}</p></div></div><h4 class="text-sm font-semibold mb-2">Parcelas deste empréstimo</h4>${summary.installments.map(inst => { const det = Finance.calcInstallmentDetails(inst); const isPaid = inst.status_inst === 'pago'; const isOverdue = !isPaid && det.daysLate > 0; return `<div class="flex justify-between items-center py-3 border-b border-gold-800/10 text-sm gap-3 ${isOverdue ? 'bg-red-500/5 rounded-lg px-2 border border-red-500/20 mb-2' : ''}"><div><p class="font-medium">#${inst.number} - ${Utils.fmtMoney(det.totalDue)}</p><p class="text-xs ${isOverdue ? 'text-red-300 font-semibold' : 'text-slate-400'}">Venc: ${Utils.fmtDate(inst.due_date)} ${isOverdue?'('+det.daysLate+'d atraso)':''}</p><p class="text-xs text-slate-500">Principal pendente: ${Utils.fmtMoney(det.principal)} • Juros: ${Utils.fmtMoney(det.totalInterestPending)}</p>${!isPaid && det.accumulatedPenalty > 0 ? `<p class="text-xs text-red-300">Multa: ${Utils.fmtMoney(det.accumulatedPenalty)}</p>` : ''}</div><div class="flex flex-col items-end gap-2"><span class="badge ${isPaid?'badge-paid':isOverdue?'badge-overdue':'badge-pending'}">${isPaid?'Pago':isOverdue?'Atraso':'Pendente'}</span>${!isPaid ? `<button type="button" onclick="navigator.clipboard.writeText('${mvEscapeJs(pix)}');Utils.toast('PIX copiado! Faça o pagamento e envie o comprovante.');" class="btn-gold py-1 px-3 text-xs whitespace-nowrap">Pagar PIX</button>` : ''}</div></div>`; }).join('')}</div>`; })() : '<p class="text-slate-500 text-center">Nenhum empréstimo</p>';
+      return `<div class="flex flex-col h-full w-full fade-in"><header class="flex items-center justify-between px-4 py-3 border-b border-gold-800/20"><div class="flex items-center gap-2 min-w-0"><div class="w-8 h-8 rounded-lg bg-gradient-to-br from-gold-500 to-gold-700 flex items-center justify-center shrink-0"><i data-lucide="user" class="w-4 h-4 text-navy-900"></i></div><div class="min-w-0"><p class="text-sm font-semibold truncate">${mvEscapeHtml(client.name)}</p><p class="text-xs text-slate-400">${mvEscapeHtml(client.cpf)}</p></div></div><button onclick="clientLoggedIn=null;Utils.clearStates();currentScreen='home';render()" class="text-slate-400 text-xs flex items-center gap-1"><i data-lucide="log-out" class="w-4 h-4"></i></button></header><div class="flex-1 overflow-auto p-4"><div class="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4"><div class="stat-card text-center"><p class="text-xs text-slate-400">Valor Devido</p><p class="text-sm font-bold text-red-400">${Utils.fmtMoney(totalDebt)}</p></div><div class="stat-card text-center"><p class="text-xs text-slate-400">Principal Aberto</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(totalPrincipalOpen)}</p></div><div class="stat-card text-center"><p class="text-xs text-slate-400">Juros Aberto</p><p class="text-sm font-bold text-yellow-400">${Utils.fmtMoney(totalInterestOpen)}</p></div><div class="stat-card text-center"><p class="text-xs text-slate-400">Multa Aberta</p><p class="text-sm font-bold text-red-300">${Utils.fmtMoney(totalPenaltyOpen)}</p></div><div class="stat-card text-center"><p class="text-xs text-slate-400">Total Pago</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(totalPaidAll)}</p></div><div class="stat-card text-center ${overdueCount > 0 ? 'border-red-500/40 bg-red-500/5' : ''}"><p class="text-xs text-slate-400">Atraso</p><p class="text-sm font-bold ${overdueCount > 0 ? 'text-red-300' : 'text-yellow-400'}">${overdueCount}</p></div></div><div class="card p-3 mb-4 flex items-center gap-2"><i data-lucide="qr-code" class="w-5 h-5 text-gold-400"></i><div class="flex-1 min-w-0"><p class="text-xs text-slate-400">PIX</p><p class="text-sm font-medium break-all">${mvEscapeHtml(pix)}</p></div><button onclick="navigator.clipboard.writeText('${mvEscapeJs(pix)}');Utils.toast('PIX copiado!')" class="btn-outline py-1 px-2 text-xs">Copiar</button></div>${loanSelector}${selectedCard}</div></div>`;
     }
-
     function showPaymentModal() {
       const old = document.getElementById('payment-modal');
       if (old) old.remove();
@@ -3299,85 +3165,18 @@
       if (old) old.remove();
       const loan = DB.getLoanByKey(activeModal.loanKey);
       if (!loan) return;
-      const client = DB.getClientById(loan.client_id);
       Finance.ensureInstallmentsForLoan(loan);
-
-      const installments = DB.getInstallmentsByLoan(loan.loan_id);
-      const pendingInstallments = installments.filter(i => i.status_inst !== 'pago');
-      const payments = DB.getPaymentsByLoan(loan.loan_id);
-      const pix = DB.getConfig('pix_key', 'Não configurado');
-      const bizName = DB.getConfig('business_name', 'MV Financeira');
-      const isProportional = Finance.isProportionalLoan(loan);
-      const dailyRate = Number(loan.daily_rate_used ?? loan.late_daily_rate ?? 0);
-      const periodLabel = { diario:'dia', semanal:'semana', quinzenal:'quinzena', mensal:'mês' }[loan.frequency] || 'período';
-      const calcLabel = isProportional ? 'Saldo corrido proporcional' : 'Tabela Price / parcelas fixas';
-
-      let principalOpen = 0;
-      let interestOpen = 0;
-      let penaltyOpen = 0;
-      let currentDebt = 0;
-      let overdueAmount = 0;
-      let overdueCount = 0;
-      let details = '';
-      let nextDetails = '';
-
-      pendingInstallments.forEach(inst => {
-        const det = Finance.calcInstallmentDetails(inst, Utils.today());
-        principalOpen += Number(det.principal || 0);
-        interestOpen += Number(det.totalInterestPending || 0);
-        penaltyOpen += Number(det.accumulatedPenalty || 0);
-        currentDebt += Number(det.totalDue || 0);
-        if (det.daysLate > 0) {
-          overdueCount++;
-          overdueAmount += Number(det.totalDue || 0);
-        }
-
-        const paidPrincipal = Finance.getPaidTotal ? Finance.getPaidTotal(inst, 'principal') : Number(inst.total_paid_principal ?? inst.paid_principal ?? 0);
-        const paidInterest = (Finance.getPaidTotal ? Finance.getPaidTotal(inst, 'periodInterest') + Finance.getPaidTotal(inst, 'extraInterest') + Finance.getPaidTotal(inst, 'penalty') : Number(inst.total_paid_period_interest ?? inst.paid_period_interest ?? 0) + Number(inst.total_paid_extra_interest ?? inst.paid_extra_interest ?? 0) + Number(inst.total_paid_penalty ?? inst.paid_penalty ?? 0));
-
-        if (isProportional) {
-          details += `\n📌 SALDO CORRIDO\n━━━━━━━━━━━━━━━━━━━━━━━━\nPrincipal em aberto: ${Utils.fmtMoney(det.principal)}\nJuros corridos: ${Utils.fmtMoney(det.totalInterestPending)}\n${det.accumulatedPenalty > 0 ? `Multa: ${Utils.fmtMoney(det.accumulatedPenalty)}\n` : ''}Dias calculados: ${det.daysRunning || 0} dia(s)\nData-base dos juros: ${Utils.fmtDate(det.interestStartDate || loan.date)}\nVencimento atual: ${Utils.fmtDate(inst.due_date)}${det.daysLate > 0 ? `\nAtraso: ${det.daysLate} dia(s)` : ''}\n💰 Total atualizado hoje: ${Utils.fmtMoney(det.totalDue)}\n`;
-        } else {
-          details += `\n📌 PARCELA #${inst.number}\n━━━━━━━━━━━━━━━━━━━━━━━━\nParcela contratada: ${Utils.fmtMoney(inst.installment_amount)}\nPrincipal em aberto: ${Utils.fmtMoney(det.principal)}\nJuros em aberto: ${Utils.fmtMoney(Number(det.totalInterestPending || 0))}\nMulta em aberto: ${Utils.fmtMoney(Number(det.accumulatedPenalty || 0))}\nPrincipal já pago: ${Utils.fmtMoney(paidPrincipal)}\nJuros/Multa já pagos: ${Utils.fmtMoney(paidInterest)}\nVencimento: ${Utils.fmtDate(inst.due_date)}${det.daysLate > 0 ? `\nAtraso: ${det.daysLate} dia(s)` : ''}\n💰 Total atualizado hoje: ${Utils.fmtMoney(det.totalDue)}\n`;
-        }
-      });
-
-      if (pendingInstallments.length > 0) {
-        const nextInst = pendingInstallments[0];
-        const nextDet = Finance.calcInstallmentDetails(nextInst, Utils.today());
-        const daysToVenc = Utils.daysDiff(nextInst.due_date, Utils.today());
-        nextDetails = `\n📅 PRÓXIMO VENCIMENTO\n━━━━━━━━━━━━━━━━━━━━━━━━\n${isProportional ? 'Saldo em aberto' : 'Parcela #' + nextInst.number}: ${Utils.fmtMoney(nextDet.totalDue)}\nData: ${Utils.fmtDate(nextInst.due_date)}${daysToVenc > 0 ? `\nVence em ${daysToVenc} dia(s)` : daysToVenc === 0 ? '\nVence hoje' : `\nEstá em atraso há ${Math.abs(daysToVenc)} dia(s)`}\n`;
-      }
-
-      const totalReceived = payments.reduce((sum, p) => sum + Number(p.payment_amount || 0), 0);
-      const totalPaidPrincipal = installments.reduce((sum, inst) => sum + (Finance.getPaidTotal ? Finance.getPaidTotal(inst, 'principal') : Number(inst.total_paid_principal ?? inst.paid_principal ?? 0)), 0);
-      const totalPaidInterestPenalty = installments.reduce((sum, inst) => sum + (Finance.getPaidTotal ? Finance.getPaidTotal(inst, 'periodInterest') + Finance.getPaidTotal(inst, 'extraInterest') + Finance.getPaidTotal(inst, 'penalty') : Number(inst.total_paid_period_interest ?? inst.paid_period_interest ?? 0) + Number(inst.total_paid_extra_interest ?? inst.paid_extra_interest ?? 0) + Number(inst.total_paid_penalty ?? inst.paid_penalty ?? 0)), 0);
-
-      const situationLine = pendingInstallments.length === 0
-        ? '✅ Seu empréstimo está quitado no sistema.'
-        : overdueCount > 0
-          ? `⚠️ Você possui ${overdueCount} parcela(s) / cobrança(s) em atraso.`
-          : '✅ Não consta atraso neste momento.';
-
-      const msg = `Olá ${client?.name || ''}! 👋\n\nSegue o resumo atualizado do seu empréstimo na ${bizName}:\n\n🏦 DADOS DO EMPRÉSTIMO\n━━━━━━━━━━━━━━━━━━━━━━━━\nTipo de cálculo: ${calcLabel}\nValor contratado: ${Utils.fmtMoney(loan.amount)}\nTaxa diária base: ${dailyRate.toFixed(2).replace('.', ',')}% ao dia\nPrazo de cobrança: ${periodLabel}\n\n📊 SITUAÇÃO ATUAL\n━━━━━━━━━━━━━━━━━━━━━━━━\n${situationLine}\nValor devido atualizado hoje: ${Utils.fmtMoney(currentDebt)}\nPrincipal em aberto: ${Utils.fmtMoney(principalOpen)}\nJuros em aberto: ${Utils.fmtMoney(interestOpen)}\nMulta em aberto: ${Utils.fmtMoney(penaltyOpen)}\nTotal em atraso: ${Utils.fmtMoney(overdueAmount)}\n\n✅ VALORES JÁ PAGOS\n━━━━━━━━━━━━━━━━━━━━━━━━\nTotal recebido: ${Utils.fmtMoney(totalReceived)}\nPrincipal pago: ${Utils.fmtMoney(totalPaidPrincipal)}\nJuros/Multa pagos: ${Utils.fmtMoney(totalPaidInterestPenalty)}\n${nextDetails}${details ? '\n📄 DETALHAMENTO\n' + details : ''}\n💰 FORMA DE PAGAMENTO\n━━━━━━━━━━━━━━━━━━━━━━━━\nPIX: ${pix}\n\nFavor realizar o pagamento conforme combinado. Após pagar, envie o comprovante para baixa no sistema.\n\nAtenciosamente,\n${bizName}`;
-
-      const safeMsg = msg.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const installment = activeModal.instId ? DB.getInstallmentById(activeModal.instId) : null;
+      const msg = mvBuildChargeMessage(loan, installment);
+      const safeMsg = mvEscapeHtml(msg);
+      const title = installment ? `Cobrança da Parcela #${installment.number}` : 'Mensagem de Cobrança do Contrato';
       const div = document.createElement('div');
       div.className = 'modal-overlay';
       div.id = 'msg-modal';
-      div.innerHTML = `<div class="modal-content fade-in max-h-screen overflow-y-auto">
-        <h3 class="heading-font text-lg gold-gradient mb-4">Mensagem de Cobrança</h3>
-        <textarea class="input-field mb-3" rows="18" id="msg-text" readonly>${safeMsg}</textarea>
-        <div class="flex gap-2 flex-wrap">
-          <button onclick="activeModal=null;document.getElementById('msg-modal')?.remove()" class="btn-outline py-2 flex-1">Fechar</button>
-          <button onclick="navigator.clipboard.writeText(document.getElementById('msg-text').value);Utils.toast('Copiado!','success')" class="btn-gold py-2 flex-1 flex items-center justify-center gap-1"><i data-lucide="copy" class="w-4 h-4"></i> Copiar</button>
-        </div>
-      </div>`;
+      div.innerHTML = `<div class="modal-content fade-in max-h-screen overflow-y-auto"><h3 class="heading-font text-lg gold-gradient mb-2">${title}</h3><p class="text-xs text-slate-400 mb-3">Mensagem resumida pronta para WhatsApp/cobrança.</p><textarea class="input-field mb-3" rows="16" id="msg-text" readonly>${safeMsg}</textarea><div class="flex gap-2 flex-wrap"><button onclick="activeModal=null;document.getElementById('msg-modal')?.remove()" class="btn-outline py-2 flex-1">Fechar</button><button onclick="navigator.clipboard.writeText(document.getElementById('msg-text').value);Utils.toast('Cobrança copiada!','success')" class="btn-gold py-2 flex-1 flex items-center justify-center gap-1"><i data-lucide="copy" class="w-4 h-4"></i> Copiar</button></div></div>`;
       document.body.appendChild(div);
       lucide.createIcons();
-      if (currentScreen === 'admin' && editingLoan !== null) setTimeout(updateLoanRatePlaceholder, 0);
     }
-
     function showConfirmModal() {
       const old = document.getElementById('confirm-modal');
       if (old) old.remove();
