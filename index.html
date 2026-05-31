@@ -788,6 +788,52 @@
       return `Olá, ${client?.name || 'cliente'}!\n\nSegue o resumo atualizado do seu contrato com a ${bizName}.\n\n🏦 CONTRATO\nTipo: ${calcLabel}\nValor contratado: ${Utils.fmtMoney(loan.amount)}\nValor devido atual: ${Utils.fmtMoney(summary.totalDue)}\nPrincipal em aberto: ${Utils.fmtMoney(summary.principalOpen)}\nJuros em aberto: ${Utils.fmtMoney(summary.interestOpen)}\nMulta em aberto: ${Utils.fmtMoney(summary.penaltyOpen)}${atrasoText}${nextText}\n\n💰 FORMA DE PAGAMENTO\nPIX: ${pix}\n\nApós pagar, envie o comprovante para baixa no sistema.\n\nAtenciosamente,\n${bizName}`;
     }
 
+    function mvRecalculateInstallmentsForEditedLoan(loan, calc, dates) {
+      const existing = DB.getInstallmentsByLoan(loan.loan_id).sort((a,b) => Number(a.number || 0) - Number(b.number || 0));
+      const existingByNumber = {};
+      existing.forEach(item => { existingByNumber[Number(item.number || 0)] = item; });
+      const count = Math.max(1, Number(loan.num_installments || 1));
+      const nowIso = new Date().toISOString();
+      for (let i = 0; i < count; i++) {
+        const row = calc.schedule?.[i] || { installmentAmount: loan.amount, principal: loan.amount, interest: 0, startBalance: loan.amount, endBalance: 0 };
+        const basePatch = {
+          loan_id_inst: loan.loan_id,
+          number: i + 1,
+          due_date: dates[i],
+          installment_amount: Finance.round2(row.installmentAmount),
+          principal: Finance.round2(row.principal),
+          interest: Finance.round2(row.interest),
+          start_balance: Finance.round2(row.startBalance),
+          end_balance: Finance.round2(row.endBalance),
+          original_principal_before_discount: Finance.round2(row.principal),
+          original_interest_before_discount: Finance.round2(row.interest),
+          original_installment_amount_before_discount: Finance.round2(row.installmentAmount),
+          edited_at: nowIso
+        };
+        const old = existingByNumber[i + 1];
+        if (old) {
+          const testInst = { ...old, ...basePatch };
+          const det = Finance.calcInstallmentDetails(testInst);
+          DB.updateInstallment(old.id, { ...basePatch, status_inst: det.totalDue <= 0.009 ? 'pago' : 'pendente' });
+        } else {
+          DB.addInstallment({
+            id: Utils.uid(), type: 'installment', installment_id: Utils.uid(), ...basePatch,
+            paid_principal: 0, paid_period_interest: 0, paid_extra_interest: 0, paid_penalty: 0,
+            total_paid_principal: 0, total_paid_period_interest: 0, total_paid_extra_interest: 0, total_paid_penalty: 0,
+            total_penalty_discount: 0, last_payment_date: '', status_inst: 'pendente'
+          });
+        }
+      }
+      existing.filter(item => Number(item.number || 0) > count).forEach(item => {
+        const hasPayments = DB.getPaymentsByLoan(loan.loan_id).some(p => p.installment_id_pay === item.id);
+        if (hasPayments) {
+          DB.updateInstallment(item.id, { principal: 0, interest: 0, installment_amount: 0, status_inst: 'pago', removed_by_loan_edit: true, edited_at: nowIso });
+        } else {
+          DB.deleteInstallment(item.id);
+        }
+      });
+    }
+
     const DB = {
       getConfig: (key, def='') => db.configs?.[key] ?? def,
       setConfig: (key, val) => { db.configs[key] = val; persistDB(); },
@@ -1172,6 +1218,7 @@
             total_paid_period_interest: 0,
             total_paid_extra_interest: 0,
             total_paid_penalty: 0,
+            total_penalty_discount: 0,
             last_payment_date: '',
             status_inst: 'pendente',
             status_antecipacao: '',
@@ -1210,7 +1257,11 @@
 
           const currentInst = DB.getInstallmentById(pay.installment_id_pay);
           if (!currentInst) return;
-          const det = Finance.calcInstallmentDetails(currentInst, paymentDate);
+          let det = Finance.calcInstallmentDetails(currentInst, paymentDate);
+          const replayPenaltyDiscount = Finance.round2(Math.min(Number(det.accumulatedPenalty || 0), Number(pay.penalty_discount_value || 0)));
+          if (replayPenaltyDiscount > 0) {
+            det = { ...det, accumulatedPenalty: Finance.round2(det.accumulatedPenalty - replayPenaltyDiscount), totalDue: Finance.round2(det.totalDue - replayPenaltyDiscount), balance: Finance.round2((det.balance || det.totalDue) - replayPenaltyDiscount) };
+          }
           let remaining = Number(pay.payment_amount || 0);
           let paidToPeriodInterest = Math.min(det.periodInterestPending, remaining); remaining = Finance.round2(remaining - paidToPeriodInterest);
           let paidToExtraInterest = Math.min(det.extraInterestPending, remaining); remaining = Finance.round2(remaining - paidToExtraInterest);
@@ -1230,6 +1281,7 @@
             total_paid_period_interest: Finance.round2(Number(currentInst.total_paid_period_interest || 0) + paidToPeriodInterest),
             total_paid_extra_interest: Finance.round2(Number(currentInst.total_paid_extra_interest || 0) + paidToExtraInterest),
             total_paid_penalty: Finance.round2(Number(currentInst.total_paid_penalty || 0) + paidToPenalty),
+            total_penalty_discount: Finance.round2(Number(currentInst.total_penalty_discount || 0) + replayPenaltyDiscount),
             last_payment_date: paymentDate
           };
           const testInst = { ...currentInst, ...patch };
@@ -1274,6 +1326,7 @@
           total_paid_period_interest: 0,
           total_paid_extra_interest: 0,
           total_paid_penalty: 0,
+          total_penalty_discount: 0,
           due_date: scheduledDue,
           last_payment_date: '',
           interest_start_date: isProportional ? (loan?.date || inst.interest_start_date || scheduledDue) : (inst.interest_start_date || ''),
@@ -1291,7 +1344,12 @@
 
         ordered.forEach(p => {
           const paymentDate = p.payment_date || Utils.today();
-          const det = Finance.calcInstallmentDetails(state, paymentDate);
+          let det = Finance.calcInstallmentDetails(state, paymentDate);
+          const replayPenaltyDiscount = round2(Math.min(Number(det.accumulatedPenalty || 0), Number(p.penalty_discount_value || 0)));
+          if (replayPenaltyDiscount > 0) {
+            det = { ...det, accumulatedPenalty: round2(det.accumulatedPenalty - replayPenaltyDiscount), totalDue: round2(det.totalDue - replayPenaltyDiscount), balance: round2((det.balance || det.totalDue) - replayPenaltyDiscount) };
+            state.total_penalty_discount = round2(Number(state.total_penalty_discount || 0) + replayPenaltyDiscount);
+          }
           let remaining = Number(p.payment_amount || 0);
           let paidToPeriodInterest = Math.min(det.periodInterestPending, remaining); remaining -= paidToPeriodInterest;
           let paidToExtraInterest = Math.min(det.extraInterestPending, remaining); remaining -= paidToExtraInterest;
@@ -1417,6 +1475,7 @@
         const paidPrincipal = Number(inst.paid_principal || 0);
         const paidExtraInterest = Number(inst.paid_extra_interest || 0);
         const paidPenalty = Number(inst.paid_penalty || 0);
+        const penaltyDiscount = Number(inst.total_penalty_discount ?? inst.penalty_discount ?? 0);
         const principalRemaining = Math.max(0, originalPrincipal - paidPrincipal);
         const baseDate = referenceDate || Utils.today();
         const todayDate = new Date(baseDate + 'T12:00:00');
@@ -1434,7 +1493,7 @@
           // enquanto o cliente não quitar ao menos o valor mínimo de juros/multa do ciclo.
           const penaltyBase = Math.max(0, principalRemaining + periodInterestPending);
           const penaltyBrut = daysLate > 0 ? penaltyBase * (Math.pow(1 + (penaltyRate / 100), daysLate) - 1) : 0;
-          const accumulatedPenalty = Math.max(0, penaltyBrut - paidPenalty);
+          const accumulatedPenalty = Math.max(0, penaltyBrut - paidPenalty - penaltyDiscount);
           const totalInterestPending = periodInterestPending;
           const totalDue = Math.max(0, principalRemaining + totalInterestPending + accumulatedPenalty);
           return {
@@ -1471,7 +1530,7 @@
         // Base: juros pendentes da parcela.
         const penaltyBase = Math.max(0, periodInterestPending);
         const penaltyBrut = daysLate > 0 ? penaltyBase * (Math.pow(1 + (penaltyRate / 100), daysLate) - 1) : 0;
-        const accumulatedPenalty = Math.max(0, penaltyBrut - paidPenalty);
+        const accumulatedPenalty = Math.max(0, penaltyBrut - paidPenalty - penaltyDiscount);
         const totalDue = Math.max(0, principalRemaining + totalInterestPending + accumulatedPenalty);
         return { principal: principalRemaining, periodInterestPending, extraInterestPending, extraInterestDaysLate, accumulatedPenalty, totalInterestPending, earlyDiscount: 0, daysLate, totalDue, balance: totalDue };
       }
@@ -1646,6 +1705,8 @@
 
       saveLoan: (e) => {
         e.preventDefault();
+        const isEdit = !!editingLoan?.id;
+        const currentLoan = isEdit ? DB.getLoanById(editingLoan.id) : null;
         const clientId = document.getElementById('lf-client').value;
         const amount = parseFloat(document.getElementById('lf-amount').value);
         const freq = document.getElementById('lf-freq').value;
@@ -1655,6 +1716,7 @@
         const penaltyDailyRate = parseFloat(document.getElementById('lf-penalty-rate')?.value || DB.getConfig('default_penalty_daily_rate','1.00'));
         const loanDate = document.getElementById('lf-date').value || Utils.today();
         let firstDue = document.getElementById('lf-first').value;
+        const manualPeriodRate = parseFloat(document.getElementById('lf-rate')?.value || '0');
 
         if (!clientId) return Utils.toast('Selecione um cliente', 'error');
         if (!amount || amount <= 0) return Utils.toast('Valor inválido', 'error');
@@ -1680,101 +1742,67 @@
           rate = Number(calc.periodRate || 0);
           dailyRate = multi > 0 ? rate / multi : rate;
         } else {
-          if (isNaN(rate) || rate < 0) return Utils.toast('Taxa do cliente inválida', 'error');
+          rate = isNaN(manualPeriodRate) || manualPeriodRate < 0 ? rate : manualPeriodRate;
+          dailyRate = multi > 0 ? rate / multi : rate;
+          if (isNaN(rate) || rate < 0) return Utils.toast('Taxa do empréstimo inválida', 'error');
           calc = Finance.calcInstallmentAmount(amount, rate, freq, inst);
         }
-        const loanId = Utils.uid();
+        const loanId = currentLoan?.loan_id || Utils.uid();
 
         const loanData = {
-          id: Utils.uid(),
-          type: 'loan',
-          loan_id: loanId,
-          client_id: clientId,
-          amount,
-          frequency: freq,
-          num_installments: inst,
-          date: loanDate,
-          first_due: firstDue,
-          status_loan: 'ativo',
-          calculation_mode: calculationMode,
-          rate_used: rate,
-          daily_rate_used: dailyRate,
-          client_level_used: client?.level || '1',
-          late_daily_rate: dailyRate,
-          penalty_daily_rate: penaltyDailyRate,
-          fixed_installment_value: calculationMode === 'parcela_fixa' ? fixedInstallmentValue : 0,
-          calculated_from_fixed_installment: calculationMode === 'parcela_fixa'
+          id: currentLoan?.id || Utils.uid(), type: 'loan', loan_id: loanId, client_id: clientId, amount,
+          frequency: freq, num_installments: inst, date: loanDate, first_due: firstDue,
+          status_loan: currentLoan?.status_loan || 'ativo', calculation_mode: calculationMode,
+          rate_used: rate, daily_rate_used: dailyRate, client_level_used: client?.level || '1', late_daily_rate: dailyRate,
+          penalty_daily_rate: penaltyDailyRate, fixed_installment_value: calculationMode === 'parcela_fixa' ? fixedInstallmentValue : 0,
+          calculated_from_fixed_installment: calculationMode === 'parcela_fixa', edited_at: isEdit ? new Date().toISOString() : (currentLoan?.edited_at || '')
         };
 
         const dates = Finance.generateInstallmentDates(firstDue, freq, inst);
         const installmentList = [];
         if (calculationMode === 'proporcional') {
           installmentList.push({
-            id: Utils.uid(),
-            type: 'installment',
-            installment_id: Utils.uid(),
-            loan_id_inst: loanId,
-            number: 1,
-            due_date: firstDue,
-            installment_amount: Math.round(amount * 100) / 100,
-            principal: Math.round(amount * 100) / 100,
-            interest: 0,
-            interest_start_date: loanDate,
-            original_principal_before_recalc: Math.round(amount * 100) / 100,
-            original_interest_before_recalc: 0,
-            start_balance: Math.round(amount * 100) / 100,
-            end_balance: 0,
-            paid_principal: 0,
-            paid_period_interest: 0,
-            paid_extra_interest: 0,
-            paid_penalty: 0,
-            total_paid_principal: 0,
-            total_paid_period_interest: 0,
-            total_paid_extra_interest: 0,
-            total_paid_penalty: 0,
-            last_payment_date: '',
-            status_inst: 'pendente'
+            id: Utils.uid(), type: 'installment', installment_id: Utils.uid(), loan_id_inst: loanId, number: 1, due_date: firstDue,
+            installment_amount: Math.round(amount * 100) / 100, principal: Math.round(amount * 100) / 100, interest: 0,
+            interest_start_date: loanDate, original_principal_before_recalc: Math.round(amount * 100) / 100, original_interest_before_recalc: 0,
+            start_balance: Math.round(amount * 100) / 100, end_balance: 0,
+            paid_principal: 0, paid_period_interest: 0, paid_extra_interest: 0, paid_penalty: 0,
+            total_paid_principal: 0, total_paid_period_interest: 0, total_paid_extra_interest: 0, total_paid_penalty: 0,
+            total_penalty_discount: 0, last_payment_date: '', status_inst: 'pendente'
           });
         } else {
           for (let i = 0; i < inst; i++) {
             const row = calc.schedule[i];
             installmentList.push({
-              id: Utils.uid(),
-              type: 'installment',
-              installment_id: Utils.uid(),
-              loan_id_inst: loanId,
-              number: i + 1,
-              due_date: dates[i],
-              installment_amount: Math.round(row.installmentAmount * 100) / 100,
-              principal: Math.round(row.principal * 100) / 100,
-              interest: Math.round(row.interest * 100) / 100,
-              start_balance: Math.round(row.startBalance * 100) / 100,
-              end_balance: Math.round(row.endBalance * 100) / 100,
-              paid_principal: 0,
-              paid_period_interest: 0,
-              paid_extra_interest: 0,
-              paid_penalty: 0,
-              total_paid_principal: 0,
-              total_paid_period_interest: 0,
-              total_paid_extra_interest: 0,
-              total_paid_penalty: 0,
-              last_payment_date: '',
-              status_inst: 'pendente'
+              id: Utils.uid(), type: 'installment', installment_id: Utils.uid(), loan_id_inst: loanId, number: i + 1, due_date: dates[i],
+              installment_amount: Math.round(row.installmentAmount * 100) / 100, principal: Math.round(row.principal * 100) / 100,
+              interest: Math.round(row.interest * 100) / 100, start_balance: Math.round(row.startBalance * 100) / 100, end_balance: Math.round(row.endBalance * 100) / 100,
+              paid_principal: 0, paid_period_interest: 0, paid_extra_interest: 0, paid_penalty: 0,
+              total_paid_principal: 0, total_paid_period_interest: 0, total_paid_extra_interest: 0, total_paid_penalty: 0,
+              total_penalty_discount: 0, last_payment_date: '', status_inst: 'pendente'
             });
           }
         }
-        DB.addLoanWithInstallments(loanData, installmentList);
 
-        Utils.toast('Empréstimo criado!', 'success');
+        if (isEdit && currentLoan) {
+          DB.updateLoan(currentLoan.id, loanData);
+          mvRecalculateInstallmentsForEditedLoan({ ...currentLoan, ...loanData }, calculationMode === 'proporcional' ? { schedule: [{ installmentAmount: amount, principal: amount, interest: 0, startBalance: amount, endBalance: 0 }] } : calc, dates);
+          Utils.toast('Empréstimo atualizado e parcelas recalculadas!', 'success');
+          viewingLoan = currentLoan.id;
+        } else {
+          DB.addLoanWithInstallments(loanData, installmentList);
+          Utils.toast('Empréstimo criado!', 'success');
+        }
         editingLoan = null;
         render();
       },
-
       processPayment: (e) => {
         e.preventDefault();
         const instId = activeModal?.instId || activeModal?.inst?.id;
         const amount = parseFloat(document.getElementById('pay-amount').value);
         const type = document.getElementById('pay-type').value;
+        const discountEnabled = document.getElementById('pay-discount-enabled')?.checked;
+        const requestedPenaltyDiscountPercent = discountEnabled ? Math.max(0, Math.min(100, parseFloat(document.getElementById('pay-penalty-discount-percent')?.value || '0'))) : 0;
         const paymentDate = document.getElementById('pay-date').value;
         const nextDueDate = document.getElementById('pay-next-due')?.value || '';
         if (!instId) return Utils.toast('Parcela não selecionada', 'error');
@@ -1834,7 +1862,11 @@
           return Utils.toast('A nova data precisa ser maior que a data do pagamento', 'error');
         }
 
-        const det = Finance.calcInstallmentDetails(inst, paymentDate);
+        let det = Finance.calcInstallmentDetails(inst, paymentDate);
+        const penaltyDiscountValue = Finance.round2(Math.min(Number(det.accumulatedPenalty || 0), Number(det.accumulatedPenalty || 0) * requestedPenaltyDiscountPercent / 100));
+        if (penaltyDiscountValue > 0) {
+          det = { ...det, accumulatedPenalty: Finance.round2(det.accumulatedPenalty - penaltyDiscountValue), totalDue: Finance.round2(det.totalDue - penaltyDiscountValue), balance: Finance.round2((det.balance || det.totalDue) - penaltyDiscountValue) };
+        }
         const minimumToRollCycle = Finance.round2(Number(det.totalInterestPending || 0) + Number(det.accumulatedPenalty || 0));
         let remainingAmount = amount;
 
@@ -1883,6 +1915,7 @@
           total_paid_period_interest: cumulativePeriodInterest,
           total_paid_extra_interest: cumulativeExtraInterest,
           total_paid_penalty: cumulativePenalty,
+          total_penalty_discount: Finance.round2(Number(inst.total_penalty_discount || 0) + penaltyDiscountValue),
           last_payment_date: paymentDate
         };
 
@@ -1953,6 +1986,8 @@
           paid_to_period_interest: paidToPeriodInterest,
           paid_to_extra_interest: paidToExtraInterest,
           paid_to_penalty: paidToPenalty,
+          penalty_discount_percent: requestedPenaltyDiscountPercent,
+          penalty_discount_value: penaltyDiscountValue,
           paid_extra_to_future_installments: 0,
           recalculated_remaining_principal: remainingPrincipalAfterPayment,
           recalculated_future_interest: patch.interest ?? ''
@@ -2519,10 +2554,12 @@
 
     function renderLoanForm() {
       const l = editingLoan || {};
-      const clients = DB.getClients().filter(c => c.status === 'ativo');
+      const isEdit = !!l.id;
+      const clients = DB.getClients().filter(c => c.status === 'ativo' || c.id === l.client_id);
       return `<div>
         <button onclick="editingLoan=null;render()" class="text-gold-500 flex items-center gap-1 text-sm mb-4"><i data-lucide="arrow-left" class="w-4 h-4"></i> Voltar</button>
-        <h2 class="text-lg font-semibold mb-4">Novo Empréstimo</h2>
+        <h2 class="text-lg font-semibold mb-2">${isEdit ? 'Editar Empréstimo' : 'Novo Empréstimo'}</h2>
+        ${isEdit ? '<div class="card p-3 mb-4 text-xs text-yellow-200 border-yellow-400/30 bg-yellow-400/5">A edição recalcula valores, prazos, taxa e parcelas usando o mesmo contrato. Pagamentos já lançados ficam no histórico e as parcelas são ajustadas pelo número da parcela.</div>' : ''}
         <form onsubmit="Crud.saveLoan(event)" class="space-y-3">
           <div><label class="text-xs text-slate-400">Cliente *</label>
             <select class="input-field" id="lf-client" onchange="updateLoanRatePlaceholder()" required>
@@ -2533,32 +2570,33 @@
           <div><label class="text-xs text-slate-400">Valor *</label><input type="number" step="0.01" min="0.01" class="input-field" id="lf-amount" value="${l.amount||''}" oninput="updateLoanRatePlaceholder()" required></div>
           <div><label class="text-xs text-slate-400">Tipo de cálculo</label>
             <select class="input-field" id="lf-calc-mode" onchange="updateLoanRatePlaceholder()">
-              <option value="price" selected>Tabela Price - parcelas fixas</option>
-              <option value="parcela_fixa">Parcela Fixa - calcular juros pelo valor da parcela</option>
-              <option value="proporcional">Saldo corrido proporcional</option>
+              <option value="price" ${(l.calculation_mode||'price')==='price'?'selected':''}>Tabela Price - parcelas fixas</option>
+              <option value="parcela_fixa" ${l.calculation_mode==='parcela_fixa'?'selected':''}>Parcela Fixa - calcular juros pelo valor da parcela</option>
+              <option value="proporcional" ${l.calculation_mode==='proporcional'?'selected':''}>Saldo corrido proporcional</option>
             </select>
           </div>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div><label class="text-xs text-slate-400">Prazo de cobrança</label>
               <select class="input-field" id="lf-freq" onchange="updateLoanRatePlaceholder()">
-                <option value="diario">Diário</option>
-                <option value="semanal">Semanal</option>
-                <option value="quinzenal">Quinzena</option>
-                <option value="mensal" selected>Mensal</option>
+                <option value="diario" ${(l.frequency||'mensal')==='diario'?'selected':''}>Diário</option>
+                <option value="semanal" ${(l.frequency||'mensal')==='semanal'?'selected':''}>Semanal</option>
+                <option value="quinzenal" ${(l.frequency||'mensal')==='quinzenal'?'selected':''}>Quinzena</option>
+                <option value="mensal" ${(l.frequency||'mensal')==='mensal'?'selected':''}>Mensal</option>
               </select>
             </div>
-            <div><label class="text-xs text-slate-400">Nº Parcelas *</label><input type="number" min="1" class="input-field" id="lf-inst" value="12" oninput="updateLoanRatePlaceholder()" required></div>
+            <div><label class="text-xs text-slate-400">Nº Parcelas *</label><input type="number" min="1" class="input-field" id="lf-inst" value="${l.num_installments||12}" oninput="updateLoanRatePlaceholder()" required></div>
           </div>
-          <div><label class="text-xs text-slate-400" id="lf-rate-label">% cobrada no prazo escolhido</label><input type="number" step="0.01" min="0" class="input-field" id="lf-rate" data-auto-rate="1" value="15.00" readonly required></div>
-          <p class="text-xs text-slate-500 -mt-2" id="lf-rate-help">A taxa vem do nível do cliente e converte automático pelo prazo.</p>
-          <div><label class="text-xs text-slate-400">Multa de atraso diária (%)</label><input type="number" step="0.01" min="0" class="input-field" id="lf-penalty-rate" value="${DB.getConfig('default_penalty_daily_rate','1.00')}" required><p class="text-xs text-slate-500 mt-1">Essa % fica gravada somente neste empréstimo. Ex: 1,00% ao dia composto.</p></div>
-          <div id="lf-fixed-wrap" style="display:none"><label class="text-xs text-slate-400">Valor da parcela fixa *</label><input type="number" step="0.01" min="0.01" class="input-field" id="lf-fixed-payment" placeholder="Ex: 350,00" oninput="updateLoanRatePlaceholder()"><p class="text-xs text-slate-500 mt-1">Neste modo você informa a parcela desejada, e o sistema calcula a taxa/juros equivalente no caminho inverso.</p></div>
+          <div><label class="text-xs text-slate-400" id="lf-rate-label">% cobrada no prazo escolhido</label><input type="number" step="0.01" min="0" class="input-field" id="lf-rate" data-auto-rate="1" data-manual-rate="${isEdit ? '1' : '0'}" value="${Number(l.rate_used ?? 15).toFixed(2)}" oninput="this.dataset.manualRate='1';updateLoanRatePlaceholder()" required></div>
+          <p class="text-xs text-slate-500 -mt-2" id="lf-rate-help">A taxa vem do nível do cliente, mas agora você pode editar manualmente a % do prazo escolhido.</p>
+          <button type="button" onclick="document.getElementById('lf-rate').dataset.manualRate='0';updateLoanRatePlaceholder()" class="btn-outline py-2 px-3 text-xs">Usar taxa automática do nível</button>
+          <div><label class="text-xs text-slate-400">Multa de atraso diária (%)</label><input type="number" step="0.01" min="0" class="input-field" id="lf-penalty-rate" value="${l.penalty_daily_rate ?? DB.getConfig('default_penalty_daily_rate','1.00')}" required><p class="text-xs text-slate-500 mt-1">Essa % fica gravada somente neste empréstimo. Ex: 1,00% ao dia composto.</p></div>
+          <div id="lf-fixed-wrap" style="display:none"><label class="text-xs text-slate-400">Valor da parcela fixa *</label><input type="number" step="0.01" min="0.01" class="input-field" id="lf-fixed-payment" placeholder="Ex: 350,00" value="${l.fixed_installment_value||''}" oninput="updateLoanRatePlaceholder()"><p class="text-xs text-slate-500 mt-1">Neste modo você informa a parcela desejada, e o sistema calcula a taxa/juros equivalente no caminho inverso.</p></div>
           <div class="card p-3 text-xs text-slate-300" id="lf-preview">Selecione cliente, valor, prazo e parcelas para ver a simulação Price.</div>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div><label class="text-xs text-slate-400">Data Empréstimo</label><input type="date" class="input-field" id="lf-date" value="${Utils.today()}"></div>
-            <div><label class="text-xs text-slate-400">1ª Parcela</label><input type="date" class="input-field" id="lf-first"></div>
+            <div><label class="text-xs text-slate-400">Data Empréstimo</label><input type="date" class="input-field" id="lf-date" value="${l.date||Utils.today()}"></div>
+            <div><label class="text-xs text-slate-400">1ª Parcela</label><input type="date" class="input-field" id="lf-first" value="${l.first_due||''}"></div>
           </div>
-          <button type="submit" class="btn-gold w-full py-3">Criar Empréstimo</button>
+          <button type="submit" class="btn-gold w-full py-3">${isEdit ? 'Salvar alterações do empréstimo' : 'Criar Empréstimo'}</button>
         </form>
       </div>`;
     }
@@ -2588,15 +2626,17 @@
       }
       const n = Number(document.getElementById('lf-inst')?.value || 0);
       const fixedPayment = Number(fixedInput?.value || 0);
+      const manualRateActive = rateInput?.dataset.manualRate === '1' && calcMode !== 'parcela_fixa';
+      if (manualRateActive) periodRate = Number(rateInput.value || periodRate);
       if (calcMode === 'parcela_fixa' && amount > 0 && n > 0 && fixedPayment > 0) {
         const fixedCalc = Finance.calcFixedPaymentSchedule(amount, fixedPayment, n);
         if (fixedCalc) periodRate = Number(fixedCalc.periodRate || 0);
       }
       if (label) label.textContent = calcMode === 'parcela_fixa' ? 'Taxa calculada pelo valor da parcela' : (labels[freq] || labels.mensal);
-      if (rateInput) rateInput.value = periodRate.toFixed(2);
+      if (rateInput && !manualRateActive) rateInput.value = periodRate.toFixed(2);
       if (help) {
         if (calcMode === 'parcela_fixa') help.textContent = 'Modo vice-versa: informe valor, número de parcelas e valor da parcela; o sistema calcula os juros/taxa equivalente.';
-        else help.textContent = client ? 'Cliente nível ' + (client.level || '1') + ': ' + dailyRate.toFixed(2) + '% ao dia × ' + multi + ' = ' + periodRate.toFixed(2) + '% no prazo escolhido.' : 'Selecione um cliente para aplicar a taxa do nível.';
+        else help.textContent = manualRateActive ? 'Taxa manual ativa: ' + periodRate.toFixed(2) + '% no prazo escolhido (~' + (periodRate / multi).toFixed(4) + '% ao dia).' : (client ? 'Cliente nível ' + (client.level || '1') + ': ' + dailyRate.toFixed(2) + '% ao dia × ' + multi + ' = ' + periodRate.toFixed(2) + '% no prazo escolhido.' : 'Selecione um cliente para aplicar a taxa do nível.');
       }
       if (preview) {
         if (amount > 0 && n > 0) {
@@ -2683,8 +2723,10 @@
           <div class="flex gap-2 mt-3">
             <button onclick="activeModal={type:'message',loanKey:'${loan.loan_id}'};render()" class="btn-outline flex-1 py-2 text-sm flex items-center justify-center gap-1"><i data-lucide="message-circle" class="w-4 h-4"></i> Cobrar contrato</button>
             <button onclick="confirmAction={type:'recalcLoan',loanKey:'${loan.loan_id}',clientName:'${DB.getClientById(loan.client_id)?.name || 'Cliente'}',amount:'${Utils.fmtMoney(loan.amount)}'};render()" class="btn-outline flex-1 py-2 text-sm flex items-center justify-center gap-1"><i data-lucide="refresh-cw" class="w-4 h-4"></i> Sincronizar histórico</button>
+            <button onclick="editingLoan=JSON.parse(JSON.stringify(DB.getLoanById('${loan.id}')));viewingLoan=null;render()" class="btn-outline py-2 px-3 text-sm flex items-center gap-1"><i data-lucide="pencil" class="w-4 h-4"></i> Editar</button>
             <button onclick="confirmAction={type:'deleteLoan',id:'${loan.id}',loanKey:'${loan.loan_id}',clientName:'${DB.getClientById(loan.client_id)?.name || 'Cliente'}',amount:'${Utils.fmtMoney(loan.amount)}'};render()" class="btn-danger py-2 px-3 text-sm flex items-center gap-1"><i data-lucide="trash-2" class="w-4 h-4"></i> Excluir</button>
           </div>
+          <button type="button" onclick="editingLoan=JSON.parse(JSON.stringify(DB.getLoanById('${loan.id}')));viewingLoan=null;render()" class="btn-gold w-full py-3 mt-3 text-sm font-bold flex items-center justify-center gap-2"><i data-lucide="pencil" class="w-4 h-4"></i> EDITAR ESTE EMPRÉSTIMO</button>
           ${installments.some(i => i.status_inst !== 'pago') ? `<button type="button" onclick="activeModal={type:'payment',instId:'${installments.find(i => i.status_inst !== 'pago').id}'};render();" class="btn-gold w-full py-3 mt-3 text-sm font-bold flex items-center justify-center gap-2"><i data-lucide="credit-card" class="w-4 h-4"></i> Registrar pagamento da próxima parcela</button>` : ''}
         </div>
         <h3 class="font-semibold mb-2">Parcelas</h3>
@@ -2701,6 +2743,7 @@
                 <p class="text-xs text-slate-500">Juros Pagos: ${Utils.fmtMoney(Finance.getPaidTotal(inst, 'periodInterest') + Finance.getPaidTotal(inst, 'extraInterest'))} | Juros Pendentes: ${Utils.fmtMoney(det.totalInterestPending)}</p>
                 ${Number(inst.antecipacao_desconto || 0) > 0 ? `<p class="text-xs text-emerald-300">Desconto por antecipação: ${Utils.fmtMoney(inst.antecipacao_desconto)} • Baixa total: ${Utils.fmtMoney(inst.antecipacao_baixa_total || 0)}</p>` : Number(inst.discount_applied || 0) > 0 ? `<p class="text-xs text-green-300">Desconto aplicado: ${Utils.fmtMoney(inst.discount_applied)}</p>` : ''}
                 ${!isPaid && det.accumulatedPenalty > 0 ? `<p class="text-xs text-red-300">Multa: ${Utils.fmtMoney(det.accumulatedPenalty)} | Multa Paga: ${Utils.fmtMoney(Finance.getPaidTotal(inst, 'penalty'))}</p>` : ''}
+                ${Number(inst.total_penalty_discount || 0) > 0 ? `<p class="text-xs text-emerald-300">Desconto na multa aplicado: ${Utils.fmtMoney(inst.total_penalty_discount)}</p>` : ''}
               </div>
               <div class="flex flex-row sm:flex-col items-stretch sm:items-end gap-2 w-full sm:w-auto">
                 <span class="badge ${isPaid?'badge-paid':isOverdue?'badge-overdue':'badge-pending'} justify-center">${inst.status_antecipacao === 'quitada_antecipada' ? 'Quitada antecipada' : inst.status_antecipacao === 'parcialmente_antecipada' ? 'Parcial antecipada' : isPaid?'Pago':isOverdue?'Atraso':'Pendente'}</span>
@@ -2718,7 +2761,7 @@
               ${p.payment_type === 'antecipacao_parcelas' ? `<div class="text-xs text-slate-500 mt-1 space-y-1">
                 <p>Total recebido: ${Utils.fmtMoney(p.payment_amount || 0)} • Desconto: ${Utils.fmtMoney(p.antecipacao_discount_total || 0)} • Baixa total: ${Utils.fmtMoney(p.antecipacao_total_baixado || 0)}</p>
                 ${(p.parcelas_afetadas || []).map(a => `<p class="text-emerald-300">Parcela #${a.numeroParcela}: ${a.statusNovo === 'quitada_antecipada' ? 'quitada' : 'abatida'} por ${Utils.fmtMoney(a.valorRecebidoAplicado)} • desconto ${Utils.fmtMoney(a.descontoAplicado)} • ${a.diasAntecipados} dia(s)</p>`).join('')}
-              </div>` : `<p class="text-xs text-slate-500 mt-1">Principal: ${Utils.fmtMoney(p.paid_to_principal || 0)} • J. Período: ${Utils.fmtMoney(p.paid_to_period_interest || 0)} • J. Extras: ${Utils.fmtMoney(p.paid_to_extra_interest || 0)} • Multa: ${Utils.fmtMoney(p.paid_to_penalty || 0)}</p>`}
+              </div>` : `<p class="text-xs text-slate-500 mt-1">Principal: ${Utils.fmtMoney(p.paid_to_principal || 0)} • J. Período: ${Utils.fmtMoney(p.paid_to_period_interest || 0)} • J. Extras: ${Utils.fmtMoney(p.paid_to_extra_interest || 0)} • Multa: ${Utils.fmtMoney(p.paid_to_penalty || 0)}</p>${Number(p.penalty_discount_value || 0) > 0 ? `<p class="text-xs text-emerald-300 mt-1">Desconto de multa: ${Utils.fmtMoney(p.penalty_discount_value)} (${Number(p.penalty_discount_percent || 0).toFixed(2)}%)</p>` : ''}`}
             </div>
             <button onclick="confirmAction={type:'deletePayment',id:'${p.id}',amount:'${Utils.fmtMoney(p.payment_amount)}'};render()" class="btn-danger py-1 px-2 text-xs flex items-center gap-1"><i data-lucide="trash-2" class="w-3 h-3"></i> Excluir</button>
           </div>
@@ -3099,7 +3142,7 @@
       if (loans.length && (!clientPortalSelectedLoan || !loans.some(l => l.loan_id === clientPortalSelectedLoan))) clientPortalSelectedLoan = summaries.find(x => x.summary.pendingCount > 0)?.loan.loan_id || loans[0].loan_id;
       const selectedPair = summaries.find(x => x.loan.loan_id === clientPortalSelectedLoan) || summaries[0];
       const loanSelector = summaries.length > 1 ? `<div class="card p-3 mb-4"><p class="text-xs text-slate-400 mb-2">Navegue pelos empréstimos</p><div class="flex gap-2 overflow-x-auto pb-1">${summaries.map(({loan, summary}) => { const active = loan.loan_id === clientPortalSelectedLoan; const overdue = summary.overdueCount > 0; return `<button onclick="clientPortalSelectedLoan='${loan.loan_id}';render()" class="${active ? 'btn-gold' : 'btn-outline'} py-2 px-3 text-xs shrink-0 ${overdue && !active ? 'border-red-500/50 text-red-300' : ''}">#${String(loan.loan_id || '').slice(-4).toUpperCase()} • ${Utils.fmtMoney(summary.totalDue)}${overdue ? ' • ATRASO' : ''}</button>`; }).join('')}</div></div>` : '';
-      const selectedCard = selectedPair ? (() => { const loan = selectedPair.loan; const summary = selectedPair.summary; const overdueLoan = summary.overdueCount > 0; return `<div class="card p-4 mb-4 ${overdueLoan ? 'border-red-500/40 bg-red-500/5' : ''}"><div class="flex justify-between items-start gap-3 mb-3"><div><p class="text-xs text-slate-400">Empréstimo selecionado #${String(loan.loan_id || '').slice(-5).toUpperCase()}</p><p class="font-semibold text-gold-400">${Utils.fmtMoney(loan.amount)}</p><p class="text-xs ${overdueLoan ? 'text-red-300 font-semibold' : 'text-slate-400'}">${loan.calculation_mode==='proporcional'?'Saldo corrido':(loan.calculation_mode==='parcela_fixa'?'Parcela fixa':(loan.num_installments+'x '+loan.frequency))}${overdueLoan ? ' • ' + summary.overdueCount + ' parcela(s) em atraso' : ''}</p></div><span class="badge ${overdueLoan ? 'badge-overdue' : loan.status_loan==='ativo'?'badge-active':'badge-paid'}">${overdueLoan ? 'ATRASO' : loan.status_loan}</span></div><div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center mb-3"><div class="stat-card"><p class="text-xs text-slate-400">Valor Devido</p><p class="text-sm font-bold text-red-400">${Utils.fmtMoney(summary.totalDue)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Principal</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(summary.principalOpen)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Juros</p><p class="text-sm font-bold text-yellow-400">${Utils.fmtMoney(summary.interestOpen)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Multa</p><p class="text-sm font-bold text-red-300">${Utils.fmtMoney(summary.penaltyOpen)}</p></div></div><h4 class="text-sm font-semibold mb-2">Parcelas deste empréstimo</h4>${summary.installments.map(inst => { const det = Finance.calcInstallmentDetails(inst); const isPaid = inst.status_inst === 'pago'; const isOverdue = !isPaid && det.daysLate > 0; return `<div class="flex justify-between items-center py-3 border-b border-gold-800/10 text-sm gap-3 ${isOverdue ? 'bg-red-500/5 rounded-lg px-2 border border-red-500/20 mb-2' : ''}"><div><p class="font-medium">#${inst.number} - ${Utils.fmtMoney(det.totalDue)}</p><p class="text-xs ${isOverdue ? 'text-red-300 font-semibold' : 'text-slate-400'}">Venc: ${Utils.fmtDate(inst.due_date)} ${isOverdue?'('+det.daysLate+'d atraso)':''}</p><p class="text-xs text-slate-500">Principal pendente: ${Utils.fmtMoney(det.principal)} • Juros: ${Utils.fmtMoney(det.totalInterestPending)}</p>${!isPaid && det.accumulatedPenalty > 0 ? `<p class="text-xs text-red-300">Multa: ${Utils.fmtMoney(det.accumulatedPenalty)}</p>` : ''}</div><div class="flex flex-col items-end gap-2"><span class="badge ${isPaid?'badge-paid':isOverdue?'badge-overdue':'badge-pending'}">${isPaid?'Pago':isOverdue?'Atraso':'Pendente'}</span>${!isPaid ? `<button type="button" onclick="navigator.clipboard.writeText('${mvEscapeJs(pix)}');Utils.toast('PIX copiado! Faça o pagamento e envie o comprovante.');" class="btn-gold py-1 px-3 text-xs whitespace-nowrap">Pagar PIX</button>` : ''}</div></div>`; }).join('')}</div>`; })() : '<p class="text-slate-500 text-center">Nenhum empréstimo</p>';
+      const selectedCard = selectedPair ? (() => { const loan = selectedPair.loan; const summary = selectedPair.summary; const overdueLoan = summary.overdueCount > 0; return `<div class="card p-4 mb-4 ${overdueLoan ? 'border-red-500/40 bg-red-500/5' : ''}"><div class="flex justify-between items-start gap-3 mb-3"><div><p class="text-xs text-slate-400">Empréstimo selecionado #${String(loan.loan_id || '').slice(-5).toUpperCase()}</p><p class="font-semibold text-gold-400">${Utils.fmtMoney(loan.amount)}</p><p class="text-xs ${overdueLoan ? 'text-red-300 font-semibold' : 'text-slate-400'}">${loan.calculation_mode==='proporcional'?'Saldo corrido':(loan.calculation_mode==='parcela_fixa'?'Parcela fixa':(loan.num_installments+'x '+loan.frequency))}${overdueLoan ? ' • ' + summary.overdueCount + ' parcela(s) em atraso' : ''}</p></div><span class="badge ${overdueLoan ? 'badge-overdue' : loan.status_loan==='ativo'?'badge-active':'badge-paid'}">${overdueLoan ? 'ATRASO' : loan.status_loan}</span></div><div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center mb-3"><div class="stat-card"><p class="text-xs text-slate-400">Valor Devido</p><p class="text-sm font-bold text-red-400">${Utils.fmtMoney(summary.totalDue)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Principal</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(summary.principalOpen)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Juros</p><p class="text-sm font-bold text-yellow-400">${Utils.fmtMoney(summary.interestOpen)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Multa</p><p class="text-sm font-bold text-red-300">${Utils.fmtMoney(summary.penaltyOpen)}</p></div></div><h4 class="text-sm font-semibold mb-2">Parcelas deste empréstimo</h4>${summary.installments.map(inst => { const det = Finance.calcInstallmentDetails(inst); const isPaid = inst.status_inst === 'pago'; const isOverdue = !isPaid && det.daysLate > 0; return `<div class="flex justify-between items-center py-3 border-b border-gold-800/10 text-sm gap-3 ${isOverdue ? 'bg-red-500/5 rounded-lg px-2 border border-red-500/20 mb-2' : ''}"><div><p class="font-medium">#${inst.number} - ${Utils.fmtMoney(det.totalDue)}</p><p class="text-xs ${isOverdue ? 'text-red-300 font-semibold' : 'text-slate-400'}">Venc: ${Utils.fmtDate(inst.due_date)} ${isOverdue?'('+det.daysLate+'d atraso)':''}</p><p class="text-xs text-slate-500">Principal pendente: ${Utils.fmtMoney(det.principal)} • Juros: ${Utils.fmtMoney(det.totalInterestPending)}</p>${!isPaid && det.accumulatedPenalty > 0 ? `<p class="text-xs text-red-300">Multa: ${Utils.fmtMoney(det.accumulatedPenalty)}</p>` : ''}${Number(inst.total_penalty_discount || 0) > 0 ? `<p class="text-xs text-emerald-300">Desconto na multa: ${Utils.fmtMoney(inst.total_penalty_discount)}</p>` : ''}</div><div class="flex flex-col items-end gap-2"><span class="badge ${isPaid?'badge-paid':isOverdue?'badge-overdue':'badge-pending'}">${isPaid?'Pago':isOverdue?'Atraso':'Pendente'}</span>${!isPaid ? `<button type="button" onclick="navigator.clipboard.writeText('${mvEscapeJs(pix)}');Utils.toast('PIX copiado! Faça o pagamento e envie o comprovante.');" class="btn-gold py-1 px-3 text-xs whitespace-nowrap">Pagar PIX</button>` : ''}</div></div>`; }).join('')}</div>`; })() : '<p class="text-slate-500 text-center">Nenhum empréstimo</p>';
       return `<div class="flex flex-col h-full w-full fade-in"><header class="flex items-center justify-between px-4 py-3 border-b border-gold-800/20"><div class="flex items-center gap-2 min-w-0"><div class="w-8 h-8 rounded-lg bg-gradient-to-br from-gold-500 to-gold-700 flex items-center justify-center shrink-0"><i data-lucide="user" class="w-4 h-4 text-navy-900"></i></div><div class="min-w-0"><p class="text-sm font-semibold truncate">${mvEscapeHtml(client.name)}</p><p class="text-xs text-slate-400">${mvEscapeHtml(client.cpf)}</p></div></div><button onclick="clientLoggedIn=null;Utils.clearStates();currentScreen='home';render()" class="text-slate-400 text-xs flex items-center gap-1"><i data-lucide="log-out" class="w-4 h-4"></i></button></header><div class="flex-1 overflow-auto p-4"><div class="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4"><div class="stat-card text-center"><p class="text-xs text-slate-400">Valor Devido</p><p class="text-sm font-bold text-red-400">${Utils.fmtMoney(totalDebt)}</p></div><div class="stat-card text-center"><p class="text-xs text-slate-400">Principal Aberto</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(totalPrincipalOpen)}</p></div><div class="stat-card text-center"><p class="text-xs text-slate-400">Juros Aberto</p><p class="text-sm font-bold text-yellow-400">${Utils.fmtMoney(totalInterestOpen)}</p></div><div class="stat-card text-center"><p class="text-xs text-slate-400">Multa Aberta</p><p class="text-sm font-bold text-red-300">${Utils.fmtMoney(totalPenaltyOpen)}</p></div><div class="stat-card text-center"><p class="text-xs text-slate-400">Total Pago</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(totalPaidAll)}</p></div><div class="stat-card text-center ${overdueCount > 0 ? 'border-red-500/40 bg-red-500/5' : ''}"><p class="text-xs text-slate-400">Atraso</p><p class="text-sm font-bold ${overdueCount > 0 ? 'text-red-300' : 'text-yellow-400'}">${overdueCount}</p></div></div><div class="card p-3 mb-4 flex items-center gap-2"><i data-lucide="qr-code" class="w-5 h-5 text-gold-400"></i><div class="flex-1 min-w-0"><p class="text-xs text-slate-400">PIX</p><p class="text-sm font-medium break-all">${mvEscapeHtml(pix)}</p></div><button onclick="navigator.clipboard.writeText('${mvEscapeJs(pix)}');Utils.toast('PIX copiado!')" class="btn-outline py-1 px-2 text-xs">Copiar</button></div>${loanSelector}${selectedCard}</div></div>`;
     }
     function showPaymentModal() {
@@ -3145,10 +3188,29 @@
           <input type="number" step="0.01" min="0.01" class="input-field mb-2" id="pay-amount" value="${det.totalDue.toFixed(2)}" required>
           <input type="hidden" id="pay-type" value="integral">
           <label class="text-xs text-slate-400">Data do Pagamento</label>
-          <input type="date" class="input-field mb-2" id="pay-date" value="${Utils.today()}" required>
+          <input type="date" class="input-field mb-2" id="pay-date" value="${Utils.today()}" onchange="updatePenaltyDiscountPreview()" required>
           <div id="pay-next-wrap">
             <label class="text-xs text-slate-400">Nova data da próxima parcela / novo vencimento</label>
             <input type="date" class="input-field mb-1" id="pay-next-due">
+          </div>
+          <div class="card p-3 mb-3 border-red-500/20 bg-red-500/5">
+            <label class="flex items-center gap-2 text-sm text-red-200 font-semibold mb-2">
+              <input type="checkbox" id="pay-discount-enabled" onchange="updatePenaltyDiscountPreview()" ${det.accumulatedPenalty > 0 ? '' : 'disabled'}>
+              Ativar desconto na multa
+            </label>
+            ${det.accumulatedPenalty <= 0 ? '<p class="text-xs text-slate-400 mb-2">Esta parcela ainda não tem multa em aberto. Quando houver multa, o desconto poderá ser ativado aqui.</p>' : ''}
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div>
+                <label class="text-xs text-slate-400">% de desconto da multa</label>
+                <input type="number" min="0" max="100" step="0.01" id="pay-penalty-discount-percent" class="input-field" value="0" oninput="updatePenaltyDiscountPreview()" ${det.accumulatedPenalty > 0 ? '' : 'disabled'}>
+              </div>
+              <div class="stat-card">
+                <p class="text-xs text-slate-400">Valor do desconto</p>
+                <p id="pay-penalty-discount-preview" class="font-bold text-emerald-300">R$ 0,00</p>
+                <p id="pay-total-after-discount" class="text-[11px] text-slate-500">Total após desconto: ${Utils.fmtMoney(det.totalDue)}</p>
+              </div>
+            </div>
+            <p class="text-xs text-slate-500 mt-2">Esse desconto reduz somente a multa. Não entra como valor recebido.</p>
           </div>
           <p class="text-xs text-slate-500 mb-3">Pagamento normal: não mexe nas parcelas futuras. Antecipação: aplica o dinheiro nas parcelas futuras de trás para frente com desconto a valor presente, sem somar desconto no total recebido.</p>
           <div class="flex gap-2">
@@ -3158,6 +3220,23 @@
         </form>
       </div>`;
       document.body.appendChild(div);
+    }
+
+    function updatePenaltyDiscountPreview() {
+      const inst = activeModal?.instId ? DB.getInstallmentById(activeModal.instId) : activeModal?.inst;
+      if (!inst) return;
+      const det = Finance.calcInstallmentDetails(inst, document.getElementById('pay-date')?.value || Utils.today());
+      const enabled = document.getElementById('pay-discount-enabled')?.checked;
+      const pct = enabled ? Math.max(0, Math.min(100, parseFloat(document.getElementById('pay-penalty-discount-percent')?.value || '0'))) : 0;
+      const discount = Finance.round2(Number(det.accumulatedPenalty || 0) * pct / 100);
+      const newTotal = Finance.round2(Number(det.totalDue || 0) - discount);
+      const preview = document.getElementById('pay-penalty-discount-preview');
+      const total = document.getElementById('pay-total-after-discount');
+      if (preview) preview.textContent = Utils.fmtMoney(discount);
+      if (total) total.textContent = 'Total após desconto: ' + Utils.fmtMoney(newTotal);
+      const amount = document.getElementById('pay-amount');
+      const type = document.getElementById('pay-type')?.value || 'integral';
+      if (enabled && amount && type === 'integral') amount.value = newTotal.toFixed(2);
     }
 
     function showMessageModal() {
