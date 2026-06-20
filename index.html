@@ -1526,9 +1526,10 @@
         const extraInterestDaysLate = principalRemaining * (lateDailyRate / 100) * daysLate;
         const extraInterestPending = Math.max(0, extraInterestDaysLate - paidExtraInterest);
         const totalInterestPending = periodInterestPending + extraInterestPending;
-        // MULTA COMPOSTA em contratos parcelados: 1% ao dia composto, separada do juros.
-        // Base: juros pendentes da parcela.
-        const penaltyBase = Math.max(0, periodInterestPending);
+        // MULTA COMPOSTA em contratos parcelados: separada dos juros.
+        // Base correta: PARCELA INTEIRA EM ABERTO = principal restante + juros da parcela + juros extras de atraso.
+        // Não pode ser calculada apenas sobre os juros, pois a multa contratual incide sobre o débito total vencido da parcela.
+        const penaltyBase = Math.max(0, principalRemaining + periodInterestPending + extraInterestPending);
         const penaltyBrut = daysLate > 0 ? penaltyBase * (Math.pow(1 + (penaltyRate / 100), daysLate) - 1) : 0;
         const accumulatedPenalty = Math.max(0, penaltyBrut - paidPenalty - penaltyDiscount);
         const totalDue = Math.max(0, principalRemaining + totalInterestPending + accumulatedPenalty);
