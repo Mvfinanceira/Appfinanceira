@@ -1110,14 +1110,20 @@ ${bizName}`;
           return { futureValue, presentValue: futureValue, discount: 0, daysAhead, det, isFuture: daysAhead > 0 };
         }
         const factor = Math.pow(1 + dailyRateDecimal, daysAhead);
-        const presentValue = Finance.round2(futureValue / factor);
+        const discountedPresentValue = Finance.round2(futureValue / factor);
+        // O desconto de antecipação nunca pode reduzir o capital em aberto.
+        // Ele só pode retirar juros/encargos futuros. Ex.: emprestou R$ 1.500 hoje,
+        // a quitação no mesmo dia não pode ficar abaixo de R$ 1.500.
+        const principalFloor = Finance.round2(Math.max(0, Number(det.principal || 0) + Number(det.accumulatedPenalty || 0)));
+        const presentValue = Finance.round2(Math.min(futureValue, Math.max(discountedPresentValue, principalFloor)));
         return {
           futureValue,
           presentValue,
           discount: Math.max(0, Finance.round2(futureValue - presentValue)),
           daysAhead,
           det,
-          isFuture: true
+          isFuture: true,
+          principalFloor
         };
       },
       simulateInstallmentPayoff: (loanKey, paymentDate = null) => {
@@ -1289,8 +1295,8 @@ ${bizName}`;
           paidToPenalty
         };
       },
-      reduceInstallmentByFutureValue: (inst, futureValueToReduce) => {
-        const totalFuture = Finance.getOpenFutureInstallmentValue(inst, Utils.today());
+      reduceInstallmentByFutureValue: (inst, futureValueToReduce, referenceDate = null) => {
+        const totalFuture = Finance.getOpenFutureInstallmentValue(inst, referenceDate || Utils.today());
         const reduction = Math.min(Finance.round2(futureValueToReduce), totalFuture);
         if (reduction <= 0.009 || totalFuture <= 0.009) return { principal: Number(inst.principal || 0), interest: Number(inst.interest || 0), installment_amount: Number(inst.installment_amount || 0) };
         const principal = Number(inst.principal || 0);
@@ -1341,11 +1347,11 @@ ${bizName}`;
           const statusAnterior = inst.status_inst || 'pendente';
           const dias = Math.max(0, Utils.daysDiff(inst.due_date, payDate));
           if (dias <= 0) return;
-          const valorFuturoParcela = Finance.getOpenFutureInstallmentValue(inst, payDate);
-          if (valorFuturoParcela <= 0.009) return;
-          const fator = Math.pow(1 + taxaDiariaDecimal, dias);
-          const valorPresente = Finance.round2(valorFuturoParcela / fator);
-          if (valorPresente <= 0.009) return;
+          const pv = Finance.getPresentValueForInstallment(loan, inst, payDate);
+          const valorFuturoParcela = Finance.round2(pv.futureValue || 0);
+          const valorPresente = Finance.round2(pv.presentValue || 0);
+          const fator = valorPresente > 0 ? (valorFuturoParcela / valorPresente) : 1;
+          if (valorFuturoParcela <= 0.009 || valorPresente <= 0.009) return;
 
           if (saldo + 0.009 >= valorPresente) {
             const valorRecebidoAplicado = valorPresente;
@@ -1387,7 +1393,7 @@ ${bizName}`;
             const valorRecebidoAplicado = saldo;
             const valorFuturoAbatido = Math.min(valorFuturoParcela, Finance.round2(valorRecebidoAplicado * fator));
             const desconto = Math.max(0, Finance.round2(valorFuturoAbatido - valorRecebidoAplicado));
-            const reduced = Finance.reduceInstallmentByFutureValue(inst, valorFuturoAbatido);
+            const reduced = Finance.reduceInstallmentByFutureValue(inst, valorFuturoAbatido, payDate);
             const novoStatus = reduced.installment_amount <= 0.009 ? 'quitada_antecipada' : 'parcialmente_antecipada';
             DB.updateInstallment(inst.id, {
               ...reduced,
@@ -4273,6 +4279,711 @@ ${bizName}`;
     };
 
 
+
+
+    /* =====================================================
+       V12 - TESTES E CORREÇÃO DE DATAS / EXCLUSÃO DE PAGAMENTO
+       - Pagamento usa data real informada e vencimento editável no lançamento.
+       - Próximo vencimento pode ser informado livremente.
+       - Excluir pagamento reconstrói a parcela/contrato com o histórico restante.
+       ===================================================== */
+    function mvGetPaymentCurrentDue(inst) {
+      return document.getElementById('pay-current-due')?.value || inst?.due_date || Utils.today();
+    }
+    mvGetPaymentCycleReferenceDate = function(inst) {
+      const paymentDate = document.getElementById('pay-date')?.value || Utils.today();
+      const currentDue = mvGetPaymentCurrentDue(inst);
+      if (!inst) return paymentDate;
+      const loan = DB.getLoanByKey(inst.loan_id_inst);
+      if (loan && Finance.isProportionalLoan(loan) && currentDue && new Date(paymentDate + 'T12:00:00') <= new Date(currentDue + 'T12:00:00')) {
+        return currentDue;
+      }
+      return paymentDate;
+    };
+    mvRefreshPaymentByDate = function() {
+      const mode = document.getElementById('pay-type')?.value || 'integral';
+      const inst = activeModal?.instId ? DB.getInstallmentById(activeModal.instId) : activeModal?.inst;
+      if (!inst) return;
+      const workingInst = { ...inst, due_date: mvGetPaymentCurrentDue(inst) };
+      const refDate = mvGetPaymentCycleReferenceDate(workingInst);
+      const det = Finance.calcInstallmentDetails(workingInst, refDate);
+      const p = document.getElementById('pay-date-preview');
+      if (p) p.innerHTML = 'Cálculo pela data real: <b>' + Utils.fmtDate(document.getElementById('pay-date')?.value || Utils.today()) + '</b> • vencimento considerado: <b>' + Utils.fmtDate(workingInst.due_date) + '</b> • multa nesta data: <b class="text-red-300">' + Utils.fmtMoney(det.accumulatedPenalty || 0) + '</b>';
+      mvSetPaymentMode(mode);
+    };
+
+    Crud.processPayment = (e) => {
+      e.preventDefault();
+      const instId = activeModal?.instId || activeModal?.inst?.id;
+      const type = document.getElementById('pay-type')?.value || 'integral';
+      const paymentDate = document.getElementById('pay-date')?.value || Utils.today();
+      const nextDueDate = document.getElementById('pay-next-due')?.value || '';
+      if (!instId) return Utils.toast('Parcela não selecionada', 'error');
+      const inst = DB.getInstallmentById(instId);
+      if (!inst) return Utils.toast('Parcela não encontrada', 'error');
+      const currentDueDate = document.getElementById('pay-current-due')?.value || inst.due_date || paymentDate;
+      const instForCalc = { ...inst, due_date: currentDueDate };
+      const loanForDue = DB.getLoanByKey(inst.loan_id_inst);
+      const isProportional = Finance.isProportionalLoan(loanForDue);
+      const isInstallmentMode = !isProportional;
+      const previousDueDate = currentDueDate;
+
+      if (currentDueDate !== inst.due_date) {
+        DB.updateInstallment(inst.id, { due_date: currentDueDate, due_date_manual_updated_at: new Date().toISOString() });
+      }
+
+      const amountForSpecial = mvPaymentInputs().total || Number(document.getElementById('pay-amount')?.value || 0);
+      if (type === 'quitacao_contrato') {
+        if (!isInstallmentMode) return Utils.toast('Quitação projetada automática vale para contratos parcelados.', 'error');
+        const result = Finance.applyInstallmentPayoff(inst.loan_id_inst, amountForSpecial, paymentDate);
+        if (!result.ok) return Utils.toast(result.message || 'Não foi possível quitar o contrato.', 'error');
+        DB.addPayment({
+          id: Utils.uid(), type: 'payment', payment_id: Utils.uid(), installment_id_pay: inst.id, loan_id_pay: inst.loan_id_inst,
+          payment_amount: mvRoundMoney(result.valorNecessario || amountForSpecial), payment_date: paymentDate, payment_type: 'quitacao_contrato',
+          payment_split_version: 2, previous_due_date: previousDueDate, due_date_before_payment: previousDueDate,
+          modoAplicacao: 'quitacao_valor_presente', observacao: 'Quitação total do contrato com projeção a valor presente nas parcelas futuras.',
+          antecipacao_discount_total: mvRoundMoney(result.descontoAntecipacao || 0), antecipacao_total_baixado: mvRoundMoney(result.valorBaixadoTotal || 0),
+          antecipacao_valor_recebido_aplicado: mvRoundMoney(result.valorNecessario || amountForSpecial), antecipacao_saldo_nao_aplicado: mvRoundMoney(result.saldoNaoAplicado || 0),
+          parcelas_afetadas: result.parcelasAfetadas || [], paid_to_principal: mvRoundMoney(result.paidToPrincipal || 0),
+          paid_to_period_interest: mvRoundMoney(result.paidToPeriodInterest || 0), paid_to_extra_interest: mvRoundMoney(result.paidToExtraInterest || 0), paid_to_penalty: mvRoundMoney(result.paidToPenalty || 0)
+        });
+        Utils.toast('Contrato quitado hoje: recebido ' + Utils.fmtMoney(result.valorNecessario) + ' | desconto futuro ' + Utils.fmtMoney(result.descontoAntecipacao), 'success');
+        activeModal = null; render(); return;
+      }
+      if (type === 'antecipacao_parcelas') {
+        if (!isInstallmentMode) return Utils.toast('Antecipação de parcelas futuras só vale para contratos parcelados.', 'error');
+        const result = Finance.applyAnticipationToFutureInstallments(inst.loan_id_inst, amountForSpecial, paymentDate);
+        if (!result.ok) return Utils.toast(result.message || 'Nenhuma parcela futura para antecipar.', 'error');
+        DB.addPayment({
+          id: Utils.uid(), type: 'payment', payment_id: Utils.uid(), installment_id_pay: inst.id, loan_id_pay: inst.loan_id_inst,
+          payment_amount: mvRoundMoney(result.valorRecebidoAplicado || amountForSpecial), payment_date: paymentDate, payment_type: 'antecipacao_parcelas',
+          payment_split_version: 2, previous_due_date: previousDueDate, due_date_before_payment: previousDueDate,
+          modoAplicacao: 'de_tras_para_frente', observacao: 'Antecipação de parcelas futuras com desconto a valor presente, aplicada de trás para frente.',
+          antecipacao_discount_total: mvRoundMoney(result.descontoAntecipacao || 0), antecipacao_total_baixado: mvRoundMoney(result.valorBaixadoTotal || 0),
+          antecipacao_valor_recebido_aplicado: mvRoundMoney(result.valorRecebidoAplicado || 0), antecipacao_saldo_nao_aplicado: mvRoundMoney(result.saldoNaoAplicado || 0),
+          parcelas_afetadas: result.parcelasAfetadas || [], paid_to_principal: 0, paid_to_period_interest: 0, paid_to_extra_interest: 0, paid_to_penalty: 0
+        });
+        Utils.toast('Antecipação aplicada: desconto ' + Utils.fmtMoney(result.descontoAntecipacao) + ' | baixa total ' + Utils.fmtMoney(result.valorBaixadoTotal), 'success');
+        activeModal = null; render(); return;
+      }
+
+      const paymentCycleReferenceDate = (!isInstallmentMode && paymentDate && previousDueDate && new Date(paymentDate + 'T12:00:00') <= new Date(previousDueDate + 'T12:00:00')) ? previousDueDate : paymentDate;
+      const detOriginal = Finance.calcInstallmentDetails(instForCalc, paymentCycleReferenceDate);
+      const discountEnabled = !!document.getElementById('pay-discount-enabled')?.checked;
+      const requestedPenaltyDiscountPercent = discountEnabled ? Math.max(0, Math.min(100, parseFloat(document.getElementById('pay-penalty-discount-percent')?.value || '0'))) : 0;
+      const penaltyDiscountValue = mvRoundMoney(Math.min(Number(detOriginal.accumulatedPenalty || 0), Number(detOriginal.accumulatedPenalty || 0) * requestedPenaltyDiscountPercent / 100));
+      const effectivePenaltyDue = mvRoundMoney(Math.max(0, Number(detOriginal.accumulatedPenalty || 0) - penaltyDiscountValue));
+      const inputs = mvPaymentInputs();
+      if (inputs.total <= 0 && penaltyDiscountValue <= 0) return Utils.toast('Informe algum valor pago em juros, multa ou principal.', 'error');
+
+      const jurosSplit = mvSplitInterestPayment(detOriginal, inputs.juros);
+      const paidToPeriodInterest = jurosSplit.paidToPeriodInterest;
+      const paidToExtraInterest = jurosSplit.paidToExtraInterest;
+      const paidToPenalty = mvRoundMoney(Math.min(effectivePenaltyDue, inputs.multa));
+      const paidToPrincipal = (type !== 'juros' && type !== 'multa' && type !== 'jurosMulta') ? mvRoundMoney(Math.min(Number(detOriginal.principal || 0), inputs.principal)) : 0;
+      const ignoredExcess = mvRoundMoney(Math.max(0, jurosSplit.unusedInterest) + Math.max(0, inputs.multa - paidToPenalty) + Math.max(0, inputs.principal - paidToPrincipal));
+      const amount = mvRoundMoney(paidToPeriodInterest + paidToExtraInterest + paidToPenalty + paidToPrincipal);
+      if (amount <= 0 && penaltyDiscountValue <= 0) return Utils.toast('O valor informado não encontrou juros, multa ou principal em aberto para baixar.', 'error');
+
+      const remainingPrincipalAfterPayment = Math.max(0, Number(detOriginal.principal || 0) - paidToPrincipal);
+      const cumulativePrincipal = Finance.getPaidTotal(inst, 'principal') + paidToPrincipal;
+      const cumulativePeriodInterest = Finance.getPaidTotal(inst, 'periodInterest') + paidToPeriodInterest;
+      const cumulativeExtraInterest = Finance.getPaidTotal(inst, 'extraInterest') + paidToExtraInterest;
+      const cumulativePenalty = Finance.getPaidTotal(inst, 'penalty') + paidToPenalty;
+
+      let newDue = previousDueDate;
+      let patch = {
+        due_date: previousDueDate,
+        paid_principal: mvRoundMoney(Number(inst.paid_principal || 0) + paidToPrincipal),
+        paid_period_interest: mvRoundMoney(Number(inst.paid_period_interest || 0) + paidToPeriodInterest),
+        paid_extra_interest: mvRoundMoney(Number(inst.paid_extra_interest || 0) + paidToExtraInterest),
+        paid_penalty: mvRoundMoney(Number(inst.paid_penalty || 0) + paidToPenalty),
+        total_paid_principal: mvRoundMoney(cumulativePrincipal),
+        total_paid_period_interest: mvRoundMoney(cumulativePeriodInterest),
+        total_paid_extra_interest: mvRoundMoney(cumulativeExtraInterest),
+        total_paid_penalty: mvRoundMoney(cumulativePenalty),
+        total_penalty_discount: mvRoundMoney(Number(inst.total_penalty_discount || 0) + penaltyDiscountValue),
+        last_payment_date: paymentDate
+      };
+
+      const tempInst = { ...instForCalc, ...patch };
+      const detAfter = Finance.calcInstallmentDetails(tempInst, paymentCycleReferenceDate);
+      const penaltyAfterCurrentDiscount = mvRoundMoney(Math.max(0, Number(detAfter.accumulatedPenalty || 0) - Number(penaltyDiscountValue || 0)));
+      const fullyPaid = remainingPrincipalAfterPayment <= 0.009 && Number(detAfter.totalInterestPending || 0) <= 0.009 && penaltyAfterCurrentDiscount <= 0.009;
+
+      if (fullyPaid) {
+        patch = { ...patch, status_inst: 'pago' };
+        if (isInstallmentMode) patch.last_payment_date = paymentDate;
+        Utils.toast('Parcela quitada!', 'success');
+      } else if (isInstallmentMode) {
+        patch = { ...patch, status_inst: 'pendente' };
+        Utils.toast('Pagamento registrado sem misturar juros e multa.', 'success');
+      } else {
+        const jurosQuitados = Number(detAfter.totalInterestPending || 0) <= 0.009;
+        const multaQuitadaNoCiclo = penaltyAfterCurrentDiscount <= 0.009;
+        const canRollCycle = jurosQuitados && multaQuitadaNoCiclo;
+        if (!canRollCycle) {
+          patch = { ...patch, status_inst: 'pendente' };
+          Utils.toast('Pagamento registrado. Ainda ficou juros ou multa real em aberto; o ciclo não foi renovado.', 'success');
+        } else {
+          const paymentBeforeDue = new Date(paymentDate + 'T12:00:00') <= new Date(previousDueDate + 'T12:00:00');
+          const baseDateForNextDue = paymentBeforeDue ? previousDueDate : paymentDate;
+          newDue = nextDueDate || Finance.getAutomaticNextDueDate(loanForDue, baseDateForNextDue);
+          const roundedPrincipal = mvRoundMoney(remainingPrincipalAfterPayment);
+          patch = {
+            ...patch,
+            original_principal_before_recalc: Number(inst.original_principal_before_recalc ?? inst.principal ?? 0),
+            original_interest_before_recalc: Number(inst.original_interest_before_recalc ?? inst.interest ?? 0),
+            principal: roundedPrincipal,
+            interest: 0,
+            installment_amount: roundedPrincipal,
+            interest_start_date: paymentCycleReferenceDate,
+            paid_principal: 0,
+            paid_period_interest: 0,
+            paid_extra_interest: 0,
+            paid_penalty: 0,
+            start_balance: roundedPrincipal,
+            end_balance: 0,
+            due_date: newDue,
+            last_payment_date: '',
+            status_inst: 'pendente'
+          };
+          Utils.toast('Ciclo renovado pela data real do pagamento.', 'success');
+        }
+      }
+
+      DB.addPayment({
+        id: Utils.uid(), type: 'payment', payment_id: Utils.uid(), installment_id_pay: inst.id, loan_id_pay: inst.loan_id_inst,
+        payment_amount: amount, payment_date: paymentDate, payment_cycle_reference_date: paymentCycleReferenceDate,
+        payment_type: type, payment_split_version: 2, previous_due_date: previousDueDate, due_date_before_payment: previousDueDate, new_due_date: (!isInstallmentMode && newDue !== previousDueDate) ? newDue : '',
+        paid_to_principal: mvRoundMoney(paidToPrincipal), paid_to_period_interest: mvRoundMoney(paidToPeriodInterest), paid_to_extra_interest: mvRoundMoney(paidToExtraInterest), paid_to_penalty: mvRoundMoney(paidToPenalty),
+        penalty_discount_percent: requestedPenaltyDiscountPercent, penalty_discount_value: penaltyDiscountValue,
+        paid_extra_to_future_installments: 0, normal_excess_unallocated: ignoredExcess,
+        recalculated_remaining_principal: remainingPrincipalAfterPayment, recalculated_future_interest: patch.interest ?? ''
+      });
+
+      DB.updateInstallment(inst.id, patch);
+      const allInst = DB.getInstallmentsByLoan(inst.loan_id_inst);
+      const allPaid = allInst.every(i => i.id === inst.id ? patch.status_inst === 'pago' : i.status_inst === 'pago');
+      const loan = DB.getLoanByKey(inst.loan_id_inst);
+      if (loan) DB.updateLoan(loan.id, { status_loan: allPaid ? 'quitado' : 'ativo' });
+      activeModal = null;
+      render();
+    };
+
+    showPaymentModal = function() {
+      const old = document.getElementById('payment-modal');
+      if (old) old.remove();
+      const inst = activeModal.instId ? DB.getInstallmentById(activeModal.instId) : activeModal.inst;
+      if (!inst) { activeModal = null; return Utils.toast('Parcela não encontrada', 'error'); }
+      const loan = DB.getLoanByKey(inst.loan_id_inst);
+      const det = Finance.calcInstallmentDetails(inst, Utils.today());
+      const isInstallmentMode = loan && !Finance.isProportionalLoan(loan);
+      const div = document.createElement('div');
+      div.className = 'modal-overlay';
+      div.id = 'payment-modal';
+      div.innerHTML = `<div class="modal-content fade-in">
+        <h3 class="heading-font text-lg gold-gradient mb-2">Registrar Pagamento</h3>
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs mb-3">
+          <div class="stat-card"><p class="text-slate-400">Principal aberto</p><p class="font-bold text-gold-300">${Utils.fmtMoney(det.principal)}</p></div>
+          <div class="stat-card"><p class="text-slate-400">Juros aberto hoje</p><p class="font-bold text-yellow-300">${Utils.fmtMoney(det.totalInterestPending)}</p></div>
+          <div class="stat-card"><p class="text-slate-400">Multa aberta hoje</p><p class="font-bold text-red-300">${Utils.fmtMoney(det.accumulatedPenalty)}</p></div>
+        </div>
+        ${isInstallmentMode ? `<div class="card p-3 mb-3 bg-emerald-500/5 border-emerald-500/20">
+          <div class="flex gap-2 flex-wrap mb-2">
+            <button type="button" onclick="mvSetPaymentMode('quitacao_contrato')" class="btn-gold py-1 px-3 text-xs">Quitar contrato hoje</button>
+            <button type="button" onclick="mvSetPaymentMode('antecipacao_parcelas')" class="btn-outline py-1 px-3 text-xs">Antecipar futuras</button>
+          </div>
+          <p class="text-xs text-slate-400">Quitação: vencidas/atuais pelo valor cheio e futuras a valor presente. Antecipação: aplica de trás para frente.</p>
+          <p class="text-xs text-emerald-300 mt-2">Quitação hoje: <b id="payoff-total-today">R$ 0,00</b> • desconto futuro: <b id="payoff-discount-total">R$ 0,00</b> • parcelas: <b id="payoff-installments-count">0</b></p>
+          <p id="anticipation-preview" class="text-xs text-slate-400 mt-2"></p>
+        </div>` : ''}
+        <p id="pay-mode-title" class="text-xs text-gold-400 font-semibold mb-2">Pagamento normal separado</p>
+        <div class="flex gap-2 mb-3 flex-wrap">
+          <button type="button" onclick="mvSetPaymentMode('juros')" class="btn-outline py-1 px-3 text-xs">Pagamento Juros</button>
+          <button type="button" onclick="mvSetPaymentMode('multa')" class="btn-outline py-1 px-3 text-xs">Pagamento Multa</button>
+          <button type="button" onclick="mvSetPaymentMode('integral')" class="btn-outline py-1 px-3 text-xs">Integral</button>
+          <button type="button" onclick="mvSetPaymentMode('parcial')" class="btn-outline py-1 px-3 text-xs">Manual</button>
+        </div>
+        <form onsubmit="Crud.processPayment(event)">
+          <input type="hidden" id="pay-type" value="integral">
+          <input type="hidden" id="pay-amount" value="${Finance.round2(det.totalDue).toFixed(2)}">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div>
+              <label class="text-xs text-slate-400">Data real do pagamento</label>
+              <input type="date" class="input-field mb-1" id="pay-date" value="${Utils.today()}" onchange="mvRefreshPaymentByDate();updateAnticipationProjection()" required>
+            </div>
+            <div>
+              <label class="text-xs text-slate-400">Vencimento desta parcela/ciclo</label>
+              <input type="date" class="input-field mb-1" id="pay-current-due" value="${inst.due_date || Utils.today()}" onchange="mvRefreshPaymentByDate()">
+            </div>
+          </div>
+          <p id="pay-date-preview" class="text-[11px] text-slate-500 mb-3">Use a data real em que o cliente pagou. Se foi antes/no vencimento, não gera multa indevida por lançar depois.</p>
+          <div id="pay-next-wrap">
+            <label class="text-xs text-slate-400">Próximo vencimento / data futura após este pagamento</label>
+            <input type="date" class="input-field mb-3" id="pay-next-due">
+            <p class="text-[11px] text-slate-500 -mt-2 mb-3">Opcional. Preencha se quiser controlar manualmente a data futura. Se deixar vazio, o sistema calcula pelo prazo do contrato.</p>
+          </div>
+          <div class="card p-3 mb-3 border-yellow-400/20 bg-yellow-400/5">
+            <h4 class="text-sm font-semibold text-yellow-200 mb-2">Pagamento [Juros]</h4>
+            <label class="text-xs text-slate-400">Valor pago em juros</label>
+            <input type="number" step="0.01" min="0" class="input-field" id="pay-interest-amount" value="0.00" oninput="mvUpdatePaymentTotal()">
+            <p class="text-[11px] text-slate-500 mt-1">Baixa somente juros. Não mexe em multa.</p>
+          </div>
+          <div class="card p-3 mb-3 border-red-500/20 bg-red-500/5">
+            <h4 class="text-sm font-semibold text-red-200 mb-2">Pagamento [Multa]</h4>
+            <label class="flex items-center gap-2 text-sm text-red-200 font-semibold mb-2">
+              <input type="checkbox" id="pay-discount-enabled" onchange="updatePenaltyDiscountPreview();mvUpdatePaymentTotal()">
+              Ativar desconto na multa
+            </label>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+              <div><label class="text-xs text-slate-400">% de desconto da multa</label><input type="number" min="0" max="100" step="0.01" id="pay-penalty-discount-percent" class="input-field" value="0" oninput="updatePenaltyDiscountPreview();mvUpdatePaymentTotal()"></div>
+              <div class="stat-card"><p class="text-xs text-slate-400">Total de desconto</p><p id="pay-penalty-discount-preview" class="font-bold text-emerald-300">R$ 0,00</p><p id="pay-penalty-after-discount" class="text-[11px] text-slate-500">Multa após desconto: ${Utils.fmtMoney(det.accumulatedPenalty)}</p></div>
+            </div>
+            <label class="text-xs text-slate-400">Valor pago em multa</label>
+            <input type="number" step="0.01" min="0" class="input-field" id="pay-penalty-amount" value="0.00" oninput="mvUpdatePaymentTotal()">
+            <p class="text-[11px] text-slate-500 mt-1">Desconto não entra como recebimento e não baixa juros.</p>
+          </div>
+          <div class="card p-3 mb-3 border-gold-500/20 bg-gold-500/5">
+            <h4 class="text-sm font-semibold text-gold-200 mb-2">Pagamento [Principal]</h4>
+            <label class="text-xs text-slate-400">Valor pago no capital/principal</label>
+            <input type="number" step="0.01" min="0" class="input-field" id="pay-principal-amount" value="0.00" oninput="mvUpdatePaymentTotal()">
+          </div>
+          <div class="stat-card mb-3 text-center"><p class="text-xs text-slate-400">Total recebido em dinheiro</p><p id="pay-total-money" class="text-xl font-bold text-green-400">${Utils.fmtMoney(det.totalDue)}</p><p class="text-[11px] text-slate-500">Somente esse total entra no relatório de saúde.</p></div>
+          <div class="flex gap-2">
+            <button type="button" onclick="activeModal=null;document.getElementById('payment-modal')?.remove()" class="btn-outline py-2 flex-1">Cancelar</button>
+            <button type="submit" class="btn-gold py-2 flex-1">Confirmar</button>
+          </div>
+        </form>
+      </div>`;
+      document.body.appendChild(div);
+      lucide.createIcons();
+      mvSetPaymentMode('integral');
+      mvRefreshPaymentByDate();
+    };
+
+    Finance.rebuildInstallmentFromPayments = function(inst, paymentsToReplay) {
+      const loan = DB.getLoanByKey(inst.loan_id_inst);
+      const scheduledDue = Finance.getScheduledDueDate(loan, inst.number, inst.due_date);
+      const isProportional = Finance.isProportionalLoan(loan);
+      const originalPrincipal = Number(inst.original_principal_before_recalc ?? inst.original_principal_before_discount ?? (Number(inst.principal || 0) + Finance.getPaidTotal(inst, 'principal')));
+      const originalInterest = isProportional ? 0 : Number(inst.original_interest_before_recalc ?? inst.original_interest_before_discount ?? (Number(inst.interest || 0) + Finance.getPaidTotal(inst, 'periodInterest')));
+      let state = { ...inst, principal: mvRoundMoney(originalPrincipal), interest: mvRoundMoney(originalInterest), installment_amount: mvRoundMoney(originalPrincipal + originalInterest), paid_principal: 0, paid_period_interest: 0, paid_extra_interest: 0, paid_penalty: 0, total_paid_principal: 0, total_paid_period_interest: 0, total_paid_extra_interest: 0, total_paid_penalty: 0, total_penalty_discount: 0, due_date: scheduledDue, last_payment_date: '', interest_start_date: isProportional ? (loan?.date || inst.interest_start_date || scheduledDue) : (inst.interest_start_date || ''), start_balance: mvRoundMoney(originalPrincipal), end_balance: 0, status_inst: 'pendente' };
+      const ordered = [...(paymentsToReplay || [])].sort((a,b) => {
+        const da = String(a.payment_date || ''); const db = String(b.payment_date || '');
+        if (da !== db) return da.localeCompare(db);
+        return String(a.id || '').localeCompare(String(b.id || ''));
+      });
+      ordered.forEach(p => {
+        if (p.due_date_before_payment || p.previous_due_date) state.due_date = p.due_date_before_payment || p.previous_due_date;
+        const paymentDate = p.payment_date || Utils.today();
+        const refDate = p.payment_cycle_reference_date || ((isProportional && state.due_date && new Date(paymentDate + 'T12:00:00') <= new Date(state.due_date + 'T12:00:00')) ? state.due_date : paymentDate);
+        const det = Finance.calcInstallmentDetails(state, refDate);
+        let paidToPeriodInterest, paidToExtraInterest, paidToPenalty, paidToPrincipal;
+        if (mvPaymentHasStoredAllocation(p)) {
+          paidToPeriodInterest = Math.min(Number(det.periodInterestPending || 0), Number(p.paid_to_period_interest || 0));
+          paidToExtraInterest = Math.min(Number(det.extraInterestPending || 0), Number(p.paid_to_extra_interest || 0));
+          paidToPenalty = Math.min(Number(det.accumulatedPenalty || 0), Number(p.paid_to_penalty || 0));
+          paidToPrincipal = Math.min(Number(det.principal || 0), Number(p.paid_to_principal || 0));
+        } else {
+          let remaining = Number(p.payment_amount || 0);
+          paidToPeriodInterest = Math.min(det.periodInterestPending, remaining); remaining = mvRoundMoney(remaining - paidToPeriodInterest);
+          paidToExtraInterest = Math.min(det.extraInterestPending, remaining); remaining = mvRoundMoney(remaining - paidToExtraInterest);
+          paidToPenalty = Math.min(det.accumulatedPenalty, remaining); remaining = mvRoundMoney(remaining - paidToPenalty);
+          paidToPrincipal = p.payment_type !== 'jurosMulta' ? Math.min(det.principal, remaining) : 0;
+        }
+        state.paid_period_interest = mvRoundMoney(Number(state.paid_period_interest || 0) + paidToPeriodInterest);
+        state.paid_extra_interest = mvRoundMoney(Number(state.paid_extra_interest || 0) + paidToExtraInterest);
+        state.paid_penalty = mvRoundMoney(Number(state.paid_penalty || 0) + paidToPenalty);
+        state.paid_principal = mvRoundMoney(Number(state.paid_principal || 0) + paidToPrincipal);
+        state.total_paid_period_interest = mvRoundMoney(Number(state.total_paid_period_interest || 0) + paidToPeriodInterest);
+        state.total_paid_extra_interest = mvRoundMoney(Number(state.total_paid_extra_interest || 0) + paidToExtraInterest);
+        state.total_paid_penalty = mvRoundMoney(Number(state.total_paid_penalty || 0) + paidToPenalty);
+        state.total_paid_principal = mvRoundMoney(Number(state.total_paid_principal || 0) + paidToPrincipal);
+        state.total_penalty_discount = mvRoundMoney(Number(state.total_penalty_discount || 0) + Number(p.penalty_discount_value || 0));
+        state.last_payment_date = paymentDate;
+        const detAfter = Finance.calcInstallmentDetails(state, refDate);
+        const penaltyAfterDiscount = mvRoundMoney(Math.max(0, Number(detAfter.accumulatedPenalty || 0) - Number(p.penalty_discount_value || 0)));
+        const fullyPaid = Number(detAfter.principal || 0) <= 0.009 && Number(detAfter.totalInterestPending || 0) <= 0.009 && penaltyAfterDiscount <= 0.009;
+        if (fullyPaid) {
+          state.status_inst = 'pago';
+        } else if (isProportional && Number(detAfter.totalInterestPending || 0) <= 0.009 && penaltyAfterDiscount <= 0.009) {
+          const paymentBeforeDue = new Date(paymentDate + 'T12:00:00') <= new Date(state.due_date + 'T12:00:00');
+          const baseDateForNextDue = paymentBeforeDue ? state.due_date : paymentDate;
+          const newDue = p.new_due_date || Finance.getAutomaticNextDueDate(loan, baseDateForNextDue);
+          const remainingPrincipal = mvRoundMoney(detAfter.principal || 0);
+          state = { ...state, principal: remainingPrincipal, interest: 0, installment_amount: remainingPrincipal, interest_start_date: refDate, paid_principal: 0, paid_period_interest: 0, paid_extra_interest: 0, paid_penalty: 0, start_balance: remainingPrincipal, end_balance: 0, due_date: newDue, last_payment_date: '', status_inst: 'pendente' };
+        } else {
+          state.status_inst = 'pendente';
+        }
+      });
+      return state;
+    };
+
+    Crud.deletePayment = (paymentId) => {
+      const payment = DB.getPaymentById(paymentId);
+      if (!payment) return;
+      const inst = DB.getInstallmentById(payment.installment_id_pay);
+      const loan = DB.getLoanByKey(payment.loan_id_pay);
+      DB.deletePayment(paymentId);
+      if (loan && !Finance.isProportionalLoan(loan)) {
+        Finance.rebuildNonProportionalLoanFromPayments(payment.loan_id_pay);
+        Utils.toast('Pagamento removido. Contrato parcelado recalculado com o histórico restante.', 'success');
+        render();
+        return;
+      }
+      if (inst) {
+        const remainingPayments = DB.getPaymentsByLoan(payment.loan_id_pay).filter(p => p.installment_id_pay === payment.installment_id_pay);
+        const rebuilt = Finance.rebuildInstallmentFromPayments(inst, remainingPayments);
+        DB.updateInstallment(inst.id, rebuilt);
+      }
+      if (loan) {
+        const allInst = DB.getInstallmentsByLoan(payment.loan_id_pay);
+        const allPaid = allInst.length > 0 && allInst.every(i => i.status_inst === 'pago');
+        DB.updateLoan(loan.id, { status_loan: allPaid ? 'quitado' : 'ativo', last_payment_delete_rebuild_at: new Date().toISOString() });
+      }
+      Utils.toast('Pagamento removido e parcela reconstruída corretamente.', 'success');
+      render();
+    };
+
+
+
+    /* V12.1 - Recalcula campos usando vencimento editável da modal */
+    mvSetPaymentMode = function(mode) {
+      const inst = activeModal?.instId ? DB.getInstallmentById(activeModal.instId) : activeModal?.inst;
+      if (!inst) return;
+      const payDate = document.getElementById('pay-date')?.value || Utils.today();
+      const workingInst = { ...inst, due_date: mvGetPaymentCurrentDue(inst) };
+      const refDate = mvGetPaymentCycleReferenceDate(workingInst);
+      const det = Finance.calcInstallmentDetails(workingInst, refDate);
+      const type = document.getElementById('pay-type');
+      const title = document.getElementById('pay-mode-title');
+      const nextWrap = document.getElementById('pay-next-wrap');
+      const loan = DB.getLoanByKey(inst.loan_id_inst);
+      const isInstallmentMode = loan && !Finance.isProportionalLoan(loan);
+      if (type) type.value = mode;
+      if (nextWrap) nextWrap.style.display = (mode === 'quitacao_contrato' || mode === 'antecipacao_parcelas') ? 'none' : 'block';
+      const pct = document.getElementById('pay-discount-enabled')?.checked ? Math.max(0, Math.min(100, Number(document.getElementById('pay-penalty-discount-percent')?.value || 0))) : 0;
+      const discount = mvRoundMoney(Number(det.accumulatedPenalty || 0) * pct / 100);
+      const penaltyAfterDiscount = mvRoundMoney(Math.max(0, Number(det.accumulatedPenalty || 0) - discount));
+      mvSetFieldValue('pay-interest-amount', 0);
+      mvSetFieldValue('pay-penalty-amount', 0);
+      mvSetFieldValue('pay-principal-amount', 0);
+      if (mode === 'quitacao_contrato') {
+        const payoff = Finance.simulateInstallmentPayoff(inst.loan_id_inst, payDate);
+        if (title) title.textContent = 'Quitação total do contrato hoje';
+        mvSetFieldValue('pay-principal-amount', payoff.totalHoje || 0);
+      } else if (mode === 'antecipacao_parcelas') {
+        if (title) title.textContent = 'Antecipar parcelas futuras';
+      } else if (mode === 'juros') {
+        if (title) title.textContent = 'Pagamento separado - somente juros';
+        mvSetFieldValue('pay-interest-amount', det.totalInterestPending || 0);
+      } else if (mode === 'multa') {
+        if (title) title.textContent = 'Pagamento separado - somente multa';
+        mvSetFieldValue('pay-penalty-amount', penaltyAfterDiscount);
+      } else if (mode === 'parcial') {
+        if (title) title.textContent = 'Pagamento manual separado';
+      } else {
+        if (title) title.textContent = 'Pagamento integral separado';
+        mvSetFieldValue('pay-interest-amount', det.totalInterestPending || 0);
+        mvSetFieldValue('pay-penalty-amount', penaltyAfterDiscount);
+        mvSetFieldValue('pay-principal-amount', det.principal || 0);
+      }
+      const pview = document.getElementById('pay-date-preview');
+      if (pview) pview.innerHTML = 'Cálculo pela data real: <b>' + Utils.fmtDate(payDate) + '</b> • vencimento considerado: <b>' + Utils.fmtDate(workingInst.due_date) + '</b> • multa nesta data: <b class="text-red-300">' + Utils.fmtMoney(det.accumulatedPenalty || 0) + '</b>';
+      mvUpdatePaymentTotal();
+      updateAnticipationProjection();
+    };
+
+    updatePenaltyDiscountPreview = function() {
+      const inst = activeModal?.instId ? DB.getInstallmentById(activeModal.instId) : activeModal?.inst;
+      if (!inst) return;
+      const workingInst = { ...inst, due_date: mvGetPaymentCurrentDue(inst) };
+      const det = Finance.calcInstallmentDetails(workingInst, mvGetPaymentCycleReferenceDate(workingInst));
+      const enabled = document.getElementById('pay-discount-enabled')?.checked;
+      const pct = enabled ? Math.max(0, Math.min(100, parseFloat(document.getElementById('pay-penalty-discount-percent')?.value || '0'))) : 0;
+      const discount = mvRoundMoney(Number(det.accumulatedPenalty || 0) * pct / 100);
+      const penaltyAfter = mvRoundMoney(Math.max(0, Number(det.accumulatedPenalty || 0) - discount));
+      const preview = document.getElementById('pay-penalty-discount-preview');
+      const after = document.getElementById('pay-penalty-after-discount');
+      if (preview) preview.textContent = Utils.fmtMoney(discount);
+      if (after) after.textContent = 'Multa após desconto: ' + Utils.fmtMoney(penaltyAfter);
+      const type = document.getElementById('pay-type')?.value || 'integral';
+      if (type === 'multa' || type === 'integral') mvSetFieldValue('pay-penalty-amount', penaltyAfter);
+      const data = mvPaymentInputs();
+      const totalEl = document.getElementById('pay-total-money');
+      const hidden = document.getElementById('pay-amount');
+      if (totalEl) totalEl.textContent = Utils.fmtMoney(data.total);
+      if (hidden) hidden.value = data.total.toFixed(2);
+    };
+
+
+
+    /* =====================================================
+       V14 - Pagamento Avulso
+       - Botões de pagamento passam a ser seleção real: Juros, Multa, Integral e Avulso.
+       - Remove Manual.
+       - Avulso: valor único baixa juros primeiro; se sobrar, abate principal.
+       - Não paga multa automaticamente e não usa desconto de multa.
+       - Mantém os campos de data já aprovados.
+       ===================================================== */
+    function mvSetPaymentModeButtonState(mode) {
+      document.querySelectorAll('[data-pay-mode-btn]').forEach(btn => {
+        const active = btn.getAttribute('data-pay-mode-btn') === mode;
+        btn.classList.toggle('active', active);
+        if (active) {
+          btn.classList.remove('btn-outline');
+          btn.classList.add('btn-gold');
+        } else {
+          btn.classList.remove('btn-gold');
+          btn.classList.add('btn-outline');
+        }
+      });
+    }
+
+    function mvToggleAvulsoUI(mode) {
+      const avulso = document.getElementById('pay-avulso-card');
+      const juros = document.getElementById('pay-interest-card');
+      const multa = document.getElementById('pay-penalty-card');
+      const principal = document.getElementById('pay-principal-card');
+      if (avulso) avulso.style.display = mode === 'avulso' ? 'block' : 'none';
+      if (juros) juros.style.display = mode === 'avulso' ? 'none' : 'block';
+      if (multa) multa.style.display = mode === 'avulso' ? 'none' : 'block';
+      if (principal) principal.style.display = mode === 'avulso' ? 'none' : 'block';
+    }
+
+    function mvGetAvulsoValue() {
+      return mvRoundMoney(Number(document.getElementById('pay-avulso-amount')?.value || 0));
+    }
+
+    function mvSimulateAvulsoSplit(det, value) {
+      let remaining = mvRoundMoney(value);
+      const jurosSplit = mvSplitInterestPayment(det, remaining);
+      const paidToPeriodInterest = mvRoundMoney(jurosSplit.paidToPeriodInterest || 0);
+      const paidToExtraInterest = mvRoundMoney(jurosSplit.paidToExtraInterest || 0);
+      remaining = mvRoundMoney(remaining - paidToPeriodInterest - paidToExtraInterest);
+      const paidToPrincipal = mvRoundMoney(Math.min(Number(det.principal || 0), Math.max(0, remaining)));
+      remaining = mvRoundMoney(remaining - paidToPrincipal);
+      return {
+        paidToPeriodInterest,
+        paidToExtraInterest,
+        paidToPenalty: 0,
+        paidToPrincipal,
+        amount: mvRoundMoney(paidToPeriodInterest + paidToExtraInterest + paidToPrincipal),
+        unused: mvRoundMoney(Math.max(0, remaining))
+      };
+    }
+
+    function mvUpdateAvulsoPreview() {
+      const inst = activeModal?.instId ? DB.getInstallmentById(activeModal.instId) : activeModal?.inst;
+      const preview = document.getElementById('pay-avulso-preview');
+      if (!inst || !preview) return;
+      const workingInst = { ...inst, due_date: mvGetPaymentCurrentDue(inst) };
+      const det = Finance.calcInstallmentDetails(workingInst, mvGetPaymentCycleReferenceDate(workingInst));
+      const value = mvGetAvulsoValue();
+      const split = mvSimulateAvulsoSplit(det, value);
+      preview.innerHTML = 'Aplicação: juros ' + Utils.fmtMoney(split.paidToPeriodInterest + split.paidToExtraInterest) + ' • principal ' + Utils.fmtMoney(split.paidToPrincipal) + (split.unused > 0 ? ' • sobra não aplicada ' + Utils.fmtMoney(split.unused) : '') + '. Multa não é baixada neste modo.';
+      const totalEl = document.getElementById('pay-total-money');
+      const hidden = document.getElementById('pay-amount');
+      if (totalEl) totalEl.textContent = Utils.fmtMoney(split.amount);
+      if (hidden) hidden.value = split.amount.toFixed(2);
+    }
+
+    const mvSetPaymentModeV13 = mvSetPaymentMode;
+    mvSetPaymentMode = function(mode) {
+      mode = mode === 'parcial' || mode === 'manual' ? 'avulso' : mode;
+      const inst = activeModal?.instId ? DB.getInstallmentById(activeModal.instId) : activeModal?.inst;
+      if (!inst) return;
+      const type = document.getElementById('pay-type');
+      if (type) type.value = mode;
+      mvSetPaymentModeButtonState(mode);
+      mvToggleAvulsoUI(mode);
+
+      if (mode !== 'avulso') {
+        mvSetPaymentModeV13(mode);
+        mvSetPaymentModeButtonState(mode);
+        mvToggleAvulsoUI(mode);
+        return;
+      }
+
+      const title = document.getElementById('pay-mode-title');
+      const nextWrap = document.getElementById('pay-next-wrap');
+      if (title) title.textContent = 'Pagamento Avulso - baixa juros e sobra abate principal';
+      if (nextWrap) nextWrap.style.display = 'block';
+      mvSetFieldValue('pay-interest-amount', 0);
+      mvSetFieldValue('pay-penalty-amount', 0);
+      mvSetFieldValue('pay-principal-amount', 0);
+      const workingInst = { ...inst, due_date: mvGetPaymentCurrentDue(inst) };
+      const payDate = document.getElementById('pay-date')?.value || Utils.today();
+      const det = Finance.calcInstallmentDetails(workingInst, mvGetPaymentCycleReferenceDate(workingInst));
+      const avInput = document.getElementById('pay-avulso-amount');
+      if (avInput && Number(avInput.value || 0) <= 0) avInput.value = mvRoundMoney(det.totalInterestPending || 0).toFixed(2);
+      const pview = document.getElementById('pay-date-preview');
+      if (pview) pview.innerHTML = 'Cálculo pela data real: <b>' + Utils.fmtDate(payDate) + '</b> • vencimento considerado: <b>' + Utils.fmtDate(workingInst.due_date) + '</b> • juros em aberto: <b class="text-yellow-300">' + Utils.fmtMoney(det.totalInterestPending || 0) + '</b> • principal em aberto: <b class="text-gold-300">' + Utils.fmtMoney(det.principal || 0) + '</b>';
+      mvUpdateAvulsoPreview();
+      updateAnticipationProjection();
+    };
+
+    const mvUpdatePaymentTotalV13 = mvUpdatePaymentTotal;
+    mvUpdatePaymentTotal = function() {
+      const mode = document.getElementById('pay-type')?.value || 'integral';
+      if (mode === 'avulso') return mvUpdateAvulsoPreview();
+      return mvUpdatePaymentTotalV13();
+    };
+
+    const updatePenaltyDiscountPreviewV13 = updatePenaltyDiscountPreview;
+    updatePenaltyDiscountPreview = function() {
+      const mode = document.getElementById('pay-type')?.value || 'integral';
+      if (mode === 'avulso') return mvUpdateAvulsoPreview();
+      return updatePenaltyDiscountPreviewV13();
+    };
+
+    const showPaymentModalV13 = showPaymentModal;
+    showPaymentModal = function() {
+      showPaymentModalV13();
+      const btnWrap = document.querySelector('#payment-modal .flex.gap-2.mb-3.flex-wrap');
+      if (btnWrap) {
+        btnWrap.innerHTML = `
+          <button type="button" data-pay-mode-btn="juros" onclick="mvSetPaymentMode('juros')" class="btn-outline py-1 px-3 text-xs">Pagamento Juros</button>
+          <button type="button" data-pay-mode-btn="multa" onclick="mvSetPaymentMode('multa')" class="btn-outline py-1 px-3 text-xs">Pagamento Multa</button>
+          <button type="button" data-pay-mode-btn="integral" onclick="mvSetPaymentMode('integral')" class="btn-outline py-1 px-3 text-xs">Integral</button>
+          <button type="button" data-pay-mode-btn="avulso" onclick="mvSetPaymentMode('avulso')" class="btn-outline py-1 px-3 text-xs">Pagamento Avulso</button>
+        `;
+      }
+      const interestCard = document.querySelector('#pay-interest-amount')?.closest('.card');
+      if (interestCard) interestCard.id = 'pay-interest-card';
+      const penaltyCard = document.querySelector('#pay-penalty-amount')?.closest('.card');
+      if (penaltyCard) penaltyCard.id = 'pay-penalty-card';
+      const principalCard = document.querySelector('#pay-principal-amount')?.closest('.card');
+      if (principalCard) {
+        principalCard.id = 'pay-principal-card';
+        const avulsoCard = document.createElement('div');
+        avulsoCard.className = 'card p-3 mb-3 border-blue-400/20 bg-blue-400/5';
+        avulsoCard.id = 'pay-avulso-card';
+        avulsoCard.style.display = 'none';
+        avulsoCard.innerHTML = `
+          <h4 class="text-sm font-semibold text-blue-200 mb-2">Pagamento [Avulso]</h4>
+          <label class="text-xs text-slate-400">Valor recebido fora da data combinada</label>
+          <input type="number" step="0.01" min="0" class="input-field" id="pay-avulso-amount" value="0.00" oninput="mvUpdateAvulsoPreview()">
+          <p id="pay-avulso-preview" class="text-[11px] text-slate-400 mt-2">Baixa primeiro os juros em aberto; se sobrar, abate do principal. Não baixa multa.</p>
+          <p class="text-[11px] text-slate-500 mt-1">Regra: os juros continuam sendo calculados somente sobre o principal em aberto.</p>
+        `;
+        principalCard.parentNode.insertBefore(avulsoCard, principalCard.nextSibling);
+      }
+      mvSetPaymentMode('integral');
+      lucide.createIcons();
+    };
+
+    const processPaymentV13 = Crud.processPayment;
+    Crud.processPayment = (e) => {
+      const type = document.getElementById('pay-type')?.value || 'integral';
+      if (type !== 'avulso') return processPaymentV13(e);
+      e.preventDefault();
+      const instId = activeModal?.instId || activeModal?.inst?.id;
+      const paymentDate = document.getElementById('pay-date')?.value || Utils.today();
+      const nextDueDate = document.getElementById('pay-next-due')?.value || '';
+      if (!instId) return Utils.toast('Parcela não selecionada', 'error');
+      const inst = DB.getInstallmentById(instId);
+      if (!inst) return Utils.toast('Parcela não encontrada', 'error');
+      const currentDueDate = document.getElementById('pay-current-due')?.value || inst.due_date || paymentDate;
+      const instForCalc = { ...inst, due_date: currentDueDate };
+      const loanForDue = DB.getLoanByKey(inst.loan_id_inst);
+      const isProportional = Finance.isProportionalLoan(loanForDue);
+      const isInstallmentMode = !isProportional;
+      const previousDueDate = currentDueDate;
+      if (currentDueDate !== inst.due_date) DB.updateInstallment(inst.id, { due_date: currentDueDate, due_date_manual_updated_at: new Date().toISOString() });
+
+      const paymentCycleReferenceDate = (!isInstallmentMode && paymentDate && previousDueDate && new Date(paymentDate + 'T12:00:00') <= new Date(previousDueDate + 'T12:00:00')) ? previousDueDate : paymentDate;
+      const detOriginal = Finance.calcInstallmentDetails(instForCalc, paymentCycleReferenceDate);
+      const split = mvSimulateAvulsoSplit(detOriginal, mvGetAvulsoValue());
+      if (split.amount <= 0) return Utils.toast('Informe um valor avulso válido para baixar juros ou principal.', 'error');
+
+      const remainingPrincipalAfterPayment = mvRoundMoney(Math.max(0, Number(detOriginal.principal || 0) - split.paidToPrincipal));
+      const cumulativePrincipal = Finance.getPaidTotal(inst, 'principal') + split.paidToPrincipal;
+      const cumulativePeriodInterest = Finance.getPaidTotal(inst, 'periodInterest') + split.paidToPeriodInterest;
+      const cumulativeExtraInterest = Finance.getPaidTotal(inst, 'extraInterest') + split.paidToExtraInterest;
+      const cumulativePenalty = Finance.getPaidTotal(inst, 'penalty');
+
+      let newDue = previousDueDate;
+      let patch = {
+        due_date: previousDueDate,
+        paid_principal: mvRoundMoney(Number(inst.paid_principal || 0) + split.paidToPrincipal),
+        paid_period_interest: mvRoundMoney(Number(inst.paid_period_interest || 0) + split.paidToPeriodInterest),
+        paid_extra_interest: mvRoundMoney(Number(inst.paid_extra_interest || 0) + split.paidToExtraInterest),
+        paid_penalty: mvRoundMoney(Number(inst.paid_penalty || 0)),
+        total_paid_principal: mvRoundMoney(cumulativePrincipal),
+        total_paid_period_interest: mvRoundMoney(cumulativePeriodInterest),
+        total_paid_extra_interest: mvRoundMoney(cumulativeExtraInterest),
+        total_paid_penalty: mvRoundMoney(cumulativePenalty),
+        last_payment_date: paymentDate
+      };
+
+      const tempInst = { ...instForCalc, ...patch };
+      const detAfter = Finance.calcInstallmentDetails(tempInst, paymentCycleReferenceDate);
+      const fullyPaid = remainingPrincipalAfterPayment <= 0.009 && Number(detAfter.totalInterestPending || 0) <= 0.009 && Number(detAfter.accumulatedPenalty || 0) <= 0.009;
+
+      if (fullyPaid) {
+        patch = { ...patch, status_inst: 'pago' };
+        Utils.toast('Parcela quitada com pagamento avulso.', 'success');
+      } else if (isInstallmentMode) {
+        patch = { ...patch, status_inst: 'pendente' };
+        Utils.toast('Pagamento avulso registrado: juros baixados e sobra abatida do principal.', 'success');
+      } else {
+        const jurosQuitados = Number(detAfter.totalInterestPending || 0) <= 0.009;
+        const multaEmAberto = Number(detAfter.accumulatedPenalty || 0) > 0.009;
+        if (jurosQuitados && !multaEmAberto) {
+          const paymentBeforeDue = new Date(paymentDate + 'T12:00:00') <= new Date(previousDueDate + 'T12:00:00');
+          const baseDateForNextDue = paymentBeforeDue ? previousDueDate : paymentDate;
+          newDue = nextDueDate || Finance.getAutomaticNextDueDate(loanForDue, baseDateForNextDue);
+          patch = {
+            ...patch,
+            original_principal_before_recalc: Number(inst.original_principal_before_recalc ?? inst.principal ?? 0),
+            original_interest_before_recalc: Number(inst.original_interest_before_recalc ?? inst.interest ?? 0),
+            principal: remainingPrincipalAfterPayment,
+            interest: 0,
+            installment_amount: remainingPrincipalAfterPayment,
+            interest_start_date: paymentCycleReferenceDate,
+            paid_principal: 0,
+            paid_period_interest: 0,
+            paid_extra_interest: 0,
+            paid_penalty: 0,
+            start_balance: remainingPrincipalAfterPayment,
+            end_balance: 0,
+            due_date: newDue,
+            last_payment_date: '',
+            status_inst: 'pendente'
+          };
+          Utils.toast('Pagamento avulso registrado e ciclo renovado pelos juros quitados.', 'success');
+        } else {
+          patch = { ...patch, status_inst: 'pendente' };
+          Utils.toast(multaEmAberto ? 'Pagamento avulso registrado. A multa continua separada em aberto.' : 'Pagamento avulso registrado. Ainda ficou juros em aberto.', 'success');
+        }
+      }
+
+      DB.addPayment({
+        id: Utils.uid(), type: 'payment', payment_id: Utils.uid(), installment_id_pay: inst.id, loan_id_pay: inst.loan_id_inst,
+        payment_amount: split.amount, payment_date: paymentDate, payment_cycle_reference_date: paymentCycleReferenceDate,
+        payment_type: 'avulso', payment_split_version: 3, previous_due_date: previousDueDate, due_date_before_payment: previousDueDate, new_due_date: (!isInstallmentMode && newDue !== previousDueDate) ? newDue : '',
+        paid_to_principal: mvRoundMoney(split.paidToPrincipal), paid_to_period_interest: mvRoundMoney(split.paidToPeriodInterest), paid_to_extra_interest: mvRoundMoney(split.paidToExtraInterest), paid_to_penalty: 0,
+        penalty_discount_percent: 0, penalty_discount_value: 0, paid_extra_to_future_installments: 0, normal_excess_unallocated: split.unused,
+        observacao: 'Pagamento avulso: baixa juros primeiro e o excedente abate principal. Multa permanece separada.',
+        recalculated_remaining_principal: remainingPrincipalAfterPayment, recalculated_future_interest: patch.interest ?? ''
+      });
+
+      DB.updateInstallment(inst.id, patch);
+      const allInst = DB.getInstallmentsByLoan(inst.loan_id_inst);
+      const allPaid = allInst.every(i => i.id === inst.id ? patch.status_inst === 'pago' : i.status_inst === 'pago');
+      const loan = DB.getLoanByKey(inst.loan_id_inst);
+      if (loan) DB.updateLoan(loan.id, { status_loan: allPaid ? 'quitado' : 'ativo' });
+      activeModal = null;
+      render();
+    };
+
+    const rebuildInstallmentFromPaymentsV13 = Finance.rebuildInstallmentFromPayments;
+    Finance.rebuildInstallmentFromPayments = function(inst, paymentsToReplay) {
+      // Mantém a reconstrução v13, mas registros antigos/novos de avulso já trazem os splits separados.
+      return rebuildInstallmentFromPaymentsV13(inst, paymentsToReplay);
+    };
     async function iniciarSistema() {
       await loadCloudDB();
       migratePenaltyDiscountsV7();
@@ -4302,6 +5013,130 @@ ${bizName}`;
     }
 
     iniciarSistema();
-  </script>
+  
+
+    /* =====================================================
+       V13 - EDIÇÃO DE DATA RECALCULA JUROS DO PERÍODO
+       - Ao editar Data do Empréstimo / 1ª Parcela, o saldo corrido volta a usar
+         a nova data como início dos juros.
+       - Se já existir histórico de pagamentos, reconstrói o ciclo a partir dos
+         pagamentos restantes, respeitando a nova data editada.
+       - Em contratos parcelados, refaz parcelas/datas e reaplica histórico.
+       ===================================================== */
+    mvRecalculateInstallmentsForEditedLoan = function(loan, calc, dates) {
+      const existing = DB.getInstallmentsByLoan(loan.loan_id).sort((a,b) => Number(a.number || 0) - Number(b.number || 0));
+      const existingByNumber = {};
+      existing.forEach(item => { existingByNumber[Number(item.number || 0)] = item; });
+      const count = Math.max(1, Number(loan.num_installments || 1));
+      const nowIso = new Date().toISOString();
+      const isProportional = Finance.isProportionalLoan(loan);
+
+      for (let i = 0; i < count; i++) {
+        const row = calc.schedule?.[i] || { installmentAmount: loan.amount, principal: loan.amount, interest: 0, startBalance: loan.amount, endBalance: 0 };
+        const basePrincipal = mvRoundMoney(row.principal);
+        const baseInterest = isProportional ? 0 : mvRoundMoney(row.interest);
+        const baseAmount = isProportional ? basePrincipal : mvRoundMoney(row.installmentAmount);
+        const basePatch = {
+          loan_id_inst: loan.loan_id,
+          number: i + 1,
+          due_date: dates[i] || loan.first_due || Utils.today(),
+          installment_amount: baseAmount,
+          principal: basePrincipal,
+          interest: baseInterest,
+          start_balance: mvRoundMoney(row.startBalance ?? basePrincipal),
+          end_balance: mvRoundMoney(row.endBalance ?? 0),
+          original_principal_before_discount: basePrincipal,
+          original_interest_before_discount: baseInterest,
+          original_installment_amount_before_discount: baseAmount,
+          original_principal_before_recalc: basePrincipal,
+          original_interest_before_recalc: baseInterest,
+          edited_at: nowIso,
+          // ponto principal: em saldo corrido, juros começam na nova data do empréstimo editada
+          interest_start_date: isProportional ? (loan.date || dates[i] || Utils.today()) : ''
+        };
+
+        const old = existingByNumber[i + 1];
+        if (old) {
+          const payments = DB.getPaymentsByLoan(loan.loan_id)
+            .filter(p => p.installment_id_pay === old.id)
+            .sort((a,b) => String(a.payment_date || '').localeCompare(String(b.payment_date || '')) || String(a.id || '').localeCompare(String(b.id || '')));
+
+          // Primeiro aplica a nova estrutura/data no mesmo registro da parcela.
+          DB.updateInstallment(old.id, {
+            ...basePatch,
+            paid_principal: 0,
+            paid_period_interest: 0,
+            paid_extra_interest: 0,
+            paid_penalty: 0,
+            total_paid_principal: 0,
+            total_paid_period_interest: 0,
+            total_paid_extra_interest: 0,
+            total_paid_penalty: 0,
+            total_penalty_discount: 0,
+            last_payment_date: '',
+            status_inst: 'pendente',
+            status_antecipacao: '',
+            antecipacao_valor_recebido: 0,
+            antecipacao_desconto: 0,
+            antecipacao_baixa_total: 0,
+            antecipacao_data: '',
+            recalculated_after_loan_edit_at: nowIso
+          });
+
+          const updatedBase = DB.getInstallmentById(old.id);
+          if (payments.length > 0) {
+            const rebuilt = isProportional
+              ? Finance.rebuildInstallmentFromPayments(updatedBase, payments)
+              : updatedBase;
+            DB.updateInstallment(old.id, rebuilt);
+          } else {
+            const det = Finance.calcInstallmentDetails(updatedBase, Utils.today());
+            DB.updateInstallment(old.id, { status_inst: det.totalDue <= 0.009 ? 'pago' : 'pendente' });
+          }
+        } else {
+          DB.addInstallment({
+            id: Utils.uid(), type: 'installment', installment_id: Utils.uid(), ...basePatch,
+            paid_principal: 0, paid_period_interest: 0, paid_extra_interest: 0, paid_penalty: 0,
+            total_paid_principal: 0, total_paid_period_interest: 0, total_paid_extra_interest: 0, total_paid_penalty: 0,
+            total_penalty_discount: 0, last_payment_date: '', status_inst: 'pendente', created_by_loan_edit_at: nowIso
+          });
+        }
+      }
+
+      existing.filter(item => Number(item.number || 0) > count).forEach(item => {
+        const hasPayments = DB.getPaymentsByLoan(loan.loan_id).some(p => p.installment_id_pay === item.id);
+        if (hasPayments) {
+          DB.updateInstallment(item.id, { principal: 0, interest: 0, installment_amount: 0, status_inst: 'pago', removed_by_loan_edit: true, edited_at: nowIso });
+        } else {
+          DB.deleteInstallment(item.id);
+        }
+      });
+
+      // Para parcelados, depois de redesenhar a tabela e datas, reaplica pagamentos/antecipações.
+      if (!isProportional) {
+        Finance.rebuildNonProportionalLoanFromPayments(loan.loan_id);
+      }
+
+      const allInst = DB.getInstallmentsByLoan(loan.loan_id);
+      const allPaid = allInst.length > 0 && allInst.every(i => i.status_inst === 'pago');
+      DB.updateLoan(loan.id, { status_loan: allPaid ? 'quitado' : 'ativo', last_loan_edit_recalc_at: nowIso });
+    };
+
+    // Melhora a mensagem ao salvar edição: deixa claro que data antiga recalcula juros.
+    const mvOriginalSaveLoanV13 = Crud.saveLoan;
+    Crud.saveLoan = function(e) {
+      const wasEdit = !!editingLoan?.id;
+      const oldDate = editingLoan?.date || '';
+      const oldFirstDue = editingLoan?.first_due || '';
+      mvOriginalSaveLoanV13(e);
+      if (wasEdit) {
+        const newDate = document.getElementById('lf-date')?.value || '';
+        const newFirstDue = document.getElementById('lf-first')?.value || '';
+        if ((newDate && newDate !== oldDate) || (newFirstDue && newFirstDue !== oldFirstDue)) {
+          setTimeout(() => Utils.toast('Data editada: juros e multa foram recalculados pelo novo período.', 'success'), 250);
+        }
+      }
+    };
+</script>
 </body>
 </html>
