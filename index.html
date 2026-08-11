@@ -527,6 +527,7 @@
     let viewingClient = null;
     let viewingLoan = null;
     let editingInvestor = null;
+    let editingInvestorAporte = null;
     let viewingInvestor = null;
     let confirmAction = null;
     let activeModal = null;
@@ -760,6 +761,7 @@
         viewingClient = null;
         viewingLoan = null;
         editingInvestor = null;
+        editingInvestorAporte = null;
         viewingInvestor = null;
         confirmAction = null;
         activeModal = null;
@@ -947,6 +949,7 @@ ${bizName}`;
       updateInvestor: (id, patch) => { db.investors = db.investors || []; const i = db.investors.findIndex(inv => inv.id === id); if (i >= 0) { db.investors[i] = { ...db.investors[i], ...patch }; persistDB(); } },
       deleteInvestor: (id) => { db.investors = (db.investors || []).filter(inv => inv.id !== id); db.investor_aportes = (db.investor_aportes || []).filter(a => a.investor_id !== id); db.investor_payments = (db.investor_payments || []).filter(p => p.investor_id !== id); persistDB(); },
       addInvestorAporte: (data) => { db.investor_aportes = db.investor_aportes || []; db.investor_aportes.push(data); persistDB(); },
+      updateInvestorAporte: (id, patch) => { db.investor_aportes = db.investor_aportes || []; const i = db.investor_aportes.findIndex(a => a.id === id); if (i >= 0) { db.investor_aportes[i] = { ...db.investor_aportes[i], ...patch }; persistDB(); } },
       deleteInvestorAporte: (id) => { db.investor_aportes = (db.investor_aportes || []).filter(a => a.id !== id); persistDB(); },
       addInvestorPayment: (data) => { db.investor_payments = db.investor_payments || []; db.investor_payments.push(data); persistDB(); },
       deleteInvestorPayment: (id) => { db.investor_payments = (db.investor_payments || []).filter(p => p.id !== id); persistDB(); },
@@ -1818,35 +1821,78 @@ ${bizName}`;
 
     const InvestorFinance = {
       daysFrom: (date) => Math.max(0, Utils.daysDiff(Utils.today(), date || Utils.today())),
-      calcAporte: (ap) => {
-        const investor = DB.getInvestorById(ap.investor_id);
+      daysBetween: (startDate, endDate) => Math.max(0, Utils.daysDiff(endDate || Utils.today(), startDate || Utils.today())),
+      calcAporteAt: (ap, referenceDate = null) => {
+        const investor = DB.getInvestorById(ap?.investor_id || '');
         const rate = Number(investor?.daily_rate || 0);
-        const amount = Number(ap.amount || 0);
-        const days = InvestorFinance.daysFrom(ap.date);
+        const amount = Number(ap?.amount || 0);
+        const baseDate = ap?.date || Utils.today();
+        const refDate = referenceDate || Utils.today();
+        const days = InvestorFinance.daysBetween(baseDate, refDate);
         const profit = amount * (rate / 100) * days;
-        return { amount, rate, days, profit, total: amount + profit };
+        const totalReinvested = Number(ap?.total_reinvested || 0);
+        const totalProfitPaid = Number(ap?.total_profit_paid || 0);
+        const totalPrincipalPaid = Number(ap?.total_principal_paid || 0);
+        return {
+          amount,
+          rate,
+          days,
+          profit: Finance.round2(profit),
+          total: Finance.round2(amount + profit),
+          baseDate,
+          refDate,
+          totalReinvested,
+          totalProfitPaid,
+          totalPrincipalPaid
+        };
       },
+      calcAporte: (ap) => InvestorFinance.calcAporteAt(ap, Utils.today()),
       calcInvestor: (investor) => {
         const aportes = DB.getAportesByInvestor(investor?.id || '');
         const payments = DB.getInvestorPayments(investor?.id || '');
-        let invested = 0, profit = 0, grossBalance = 0;
+        let invested = 0, profit = 0, grossBalance = 0, reinvested = 0, principalWithdrawn = 0;
         aportes.forEach(ap => {
           const c = InvestorFinance.calcAporte(ap);
           invested += c.amount;
           profit += c.profit;
           grossBalance += c.total;
+          reinvested += Number(ap.total_reinvested || 0);
+          principalWithdrawn += Number(ap.total_principal_paid || 0);
         });
-        const paid = payments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+        const paidCash = payments.filter(p => p.payment_kind !== 'reaporte').reduce((sum, p) => sum + Number(p.amount || 0), 0);
+        const paidProfitCash = payments.filter(p => p.payment_kind !== 'reaporte').reduce((sum, p) => sum + Number(p.paid_profit || 0), 0);
+        const paidPrincipalCash = payments.filter(p => p.payment_kind !== 'reaporte').reduce((sum, p) => sum + Number(p.paid_principal || 0), 0);
+        const reinvestedPayments = payments.filter(p => p.payment_kind === 'reaporte').reduce((sum, p) => sum + Number(p.amount || 0), 0);
+        const reinvestedTotal = Finance.round2(reinvestedPayments || reinvested);
+        // Rendimentos ficam separados do capital aplicado.
+        // Rendimento Total = rendimento atual em aberto + rendimento já recebido em dinheiro.
+        // A Receber = Rendimento Total - Já Recebido. Reaporte fica em campo próprio e não entra como dinheiro a receber.
+        const rendimentoTotal = Finance.round2(profit + paidProfitCash);
+        const jaRecebidoRendimento = Finance.round2(paidProfitCash);
+        const aReceberRendimento = Finance.round2(Math.max(0, rendimentoTotal - jaRecebidoRendimento));
         return {
-          invested,
-          profit,
-          grossBalance,
-          paid,
-          availableProfit: Math.max(0, profit - paid),
-          netToReceive: Math.max(0, grossBalance - paid),
+          invested: Finance.round2(invested),
+          profit: Finance.round2(profit),
+          rendimentoTotal,
+          grossBalance: Finance.round2(grossBalance),
+          paid: Finance.round2(paidCash),
+          paidCash: Finance.round2(paidCash),
+          paidProfitCash: jaRecebidoRendimento,
+          paidPrincipalCash: Finance.round2(paidPrincipalCash),
+          reinvested: reinvestedTotal,
+          principalWithdrawn: Finance.round2(principalWithdrawn || paidPrincipalCash),
+          availableProfit: aReceberRendimento,
+          netToReceive: aReceberRendimento,
           aportesCount: aportes.length,
           paymentsCount: payments.length
         };
+      },
+      chooseAporteForPayment: (investorId, paymentDate) => {
+        const aportes = DB.getAportesByInvestor(investorId).filter(ap => Number(ap.amount || 0) > 0.009);
+        if (!aportes.length) return null;
+        const withProfit = aportes.map(ap => ({ ap, calc: InvestorFinance.calcAporteAt(ap, paymentDate) }))
+          .sort((a,b) => (b.calc.profit - a.calc.profit) || String(a.ap.date || '').localeCompare(String(b.ap.date || '')));
+        return (withProfit.find(x => x.calc.profit > 0.009) || withProfit[0]).ap;
       }
     };
 
@@ -1930,12 +1976,29 @@ ${bizName}`;
 
       saveInvestorAporte: (e, investorId) => {
         e.preventDefault();
+        const editId = document.getElementById('ia-edit-id')?.value || '';
         const amount = parseFloat(document.getElementById('ia-amount').value);
         const date = document.getElementById('ia-date').value || Utils.today();
         const notes = document.getElementById('ia-notes').value.trim();
         if (!amount || amount <= 0) return Utils.toast('Valor do aporte inválido', 'error');
-        DB.addInvestorAporte({ id: Utils.uid(), type: 'investor_aporte', investor_id: investorId, amount, date, notes });
-        Utils.toast('Aporte registrado!', 'success');
+        if (editId) {
+          DB.updateInvestorAporte(editId, { amount, date, notes, edited_at: new Date().toISOString() });
+          editingInvestorAporte = null;
+          Utils.toast('Aporte atualizado. Juros passam a contar pela data informada!', 'success');
+        } else {
+          DB.addInvestorAporte({ id: Utils.uid(), type: 'investor_aporte', investor_id: investorId, amount, date, notes, created_at: new Date().toISOString(), source: 'aporte_manual' });
+          Utils.toast('Aporte registrado!', 'success');
+        }
+        render();
+      },
+
+      editInvestorAporte: (apId) => {
+        editingInvestorAporte = apId;
+        render();
+      },
+
+      cancelInvestorAporteEdit: () => {
+        editingInvestorAporte = null;
         render();
       },
 
@@ -1944,22 +2007,88 @@ ${bizName}`;
         const amount = parseFloat(document.getElementById('ip-amount').value);
         const date = document.getElementById('ip-date').value || Utils.today();
         const notes = document.getElementById('ip-notes').value.trim();
+        const selectedAporteId = document.getElementById('ip-aporte')?.value || '';
         if (!amount || amount <= 0) return Utils.toast('Valor pago inválido', 'error');
-        DB.addInvestorPayment({ id: Utils.uid(), type: 'investor_payment', investor_id: investorId, amount, date, notes });
-        Utils.toast('Pagamento ao investidor registrado!', 'success');
+        let aporte = selectedAporteId ? DB.getInvestorAporteById(selectedAporteId) : InvestorFinance.chooseAporteForPayment(investorId, date);
+        if (!aporte) return Utils.toast('Nenhum aporte ativo encontrado para lançar o pagamento.', 'error');
+        const calc = InvestorFinance.calcAporteAt(aporte, date);
+        const paidProfit = Finance.round2(Math.min(amount, calc.profit));
+        const remainingAfterProfit = Finance.round2(amount - paidProfit);
+        const paidPrincipal = Finance.round2(Math.min(remainingAfterProfit, calc.amount));
+        const unapplied = Finance.round2(Math.max(0, remainingAfterProfit - paidPrincipal));
+        const newAmount = Finance.round2(Math.max(0, calc.amount - paidPrincipal));
+        DB.addInvestorPayment({
+          id: Utils.uid(),
+          type: 'investor_payment',
+          investor_id: investorId,
+          aporte_id: aporte.id,
+          amount: Finance.round2(amount),
+          date,
+          notes,
+          payment_kind: 'pagamento',
+          paid_profit: paidProfit,
+          paid_principal: paidPrincipal,
+          unapplied_amount: unapplied,
+          aporte_amount_before: calc.amount,
+          aporte_amount_after: newAmount,
+          profit_generated_at_payment: calc.profit,
+          previous_aporte_date: aporte.date
+        });
+        DB.updateInvestorAporte(aporte.id, {
+          amount: newAmount,
+          date,
+          total_profit_paid: Finance.round2(Number(aporte.total_profit_paid || 0) + paidProfit),
+          total_principal_paid: Finance.round2(Number(aporte.total_principal_paid || 0) + paidPrincipal),
+          last_payment_date: date,
+          last_payment_amount: Finance.round2(amount),
+          updated_at: new Date().toISOString()
+        });
+        Utils.toast('Pagamento lançado: juros ' + Utils.fmtMoney(paidProfit) + ' • principal ' + Utils.fmtMoney(paidPrincipal), 'success');
         render();
       },
 
       reinvestAporteProfit: (apId) => {
         const ap = DB.getInvestorAporteById(apId);
         if (!ap) return Utils.toast('Aporte não encontrado', 'error');
-        const calc = InvestorFinance.calcAporte(ap);
+        const today = Utils.today();
+        const calc = InvestorFinance.calcAporteAt(ap, today);
         const profit = Finance.round2(calc.profit || 0);
         if (calc.days < 30) return Utils.toast('Reaporte liberado somente após 30 dias.', 'error');
         if (profit <= 0.009) return Utils.toast('Ainda não há lucro para reaportar.', 'error');
-        DB.addInvestorPayment({ id: Utils.uid(), type: 'investor_payment', investor_id: ap.investor_id, amount: profit, date: Utils.today(), notes: 'Lucro reaportado automaticamente do aporte de ' + Utils.fmtDate(ap.date) });
-        DB.addInvestorAporte({ id: Utils.uid(), type: 'investor_aporte', investor_id: ap.investor_id, amount: profit, date: Utils.today(), notes: 'Reaporte de lucro gerado pelo aporte original de ' + Utils.fmtDate(ap.date) });
-        Utils.toast('Lucro reaportado como novo aporte!', 'success');
+        DB.addInvestorPayment({
+          id: Utils.uid(),
+          type: 'investor_payment',
+          investor_id: ap.investor_id,
+          aporte_id: ap.id,
+          amount: profit,
+          date: today,
+          notes: 'Lucro reaportado do aporte de ' + Utils.fmtDate(ap.date),
+          payment_kind: 'reaporte',
+          paid_profit: profit,
+          paid_principal: 0,
+          aporte_amount_before: calc.amount,
+          aporte_amount_after: calc.amount,
+          profit_generated_at_payment: profit
+        });
+        DB.updateInvestorAporte(ap.id, {
+          date: today,
+          total_reinvested: Finance.round2(Number(ap.total_reinvested || 0) + profit),
+          last_reinvest_date: today,
+          last_reinvest_amount: profit,
+          updated_at: new Date().toISOString()
+        });
+        DB.addInvestorAporte({
+          id: Utils.uid(),
+          type: 'investor_aporte',
+          investor_id: ap.investor_id,
+          amount: profit,
+          date: today,
+          notes: 'Reaporte de lucro gerado pelo aporte original de ' + Utils.fmtDate(calc.baseDate),
+          source: 'reaporte',
+          original_aporte_id: ap.id,
+          created_at: new Date().toISOString()
+        });
+        Utils.toast('Lucro reaportado. O rendimento do aporte original foi zerado a partir de hoje!', 'success');
         render();
       },
 
@@ -1977,6 +2106,19 @@ ${bizName}`;
       },
 
       deleteInvestorPayment: (payId) => {
+        const pay = DB.getInvestorPaymentById(payId);
+        if (pay?.aporte_id) {
+          const ap = DB.getInvestorAporteById(pay.aporte_id);
+          if (ap && pay.payment_kind === 'pagamento') {
+            DB.updateInvestorAporte(ap.id, {
+              amount: Finance.round2(Number(ap.amount || 0) + Number(pay.paid_principal || 0)),
+              date: pay.previous_aporte_date || ap.date,
+              total_profit_paid: Math.max(0, Finance.round2(Number(ap.total_profit_paid || 0) - Number(pay.paid_profit || 0))),
+              total_principal_paid: Math.max(0, Finance.round2(Number(ap.total_principal_paid || 0) - Number(pay.paid_principal || 0))),
+              updated_at: new Date().toISOString()
+            });
+          }
+        }
         DB.deleteInvestorPayment(payId);
         Utils.toast('Pagamento ao investidor removido!', 'success');
         render();
@@ -2767,7 +2909,7 @@ ${bizName}`;
         <div class="flex items-center justify-between mb-4">
           <div>
             <h2 class="text-lg font-semibold">Investidores <span class="text-slate-500 text-sm">(${investors.length})</span></h2>
-            <p class="text-xs text-slate-400">Total investido: ${Utils.fmtMoney(totalInvested)} • Lucro gerado: ${Utils.fmtMoney(totalProfit)} • Pago: ${Utils.fmtMoney(totalPaid)}</p>
+            <p class="text-xs text-slate-400">Total investido: ${Utils.fmtMoney(totalInvested)} • Rendimento gerado: ${Utils.fmtMoney(totalProfit)} • Pago: ${Utils.fmtMoney(totalPaid)}</p>
           </div>
           <button onclick="editingInvestor={status:'ativo'};render()" class="btn-gold py-2 px-4 text-sm flex items-center gap-1"><i data-lucide="plus" class="w-4 h-4"></i> Novo</button>
         </div>
@@ -2778,7 +2920,7 @@ ${bizName}`;
               <div class="min-w-0">
                 <p class="font-semibold">${inv.name}</p>
                 <p class="text-xs text-slate-400">${inv.cpf} • ${Number(inv.daily_rate||0).toFixed(2)}% ao dia • ${calc.aportesCount} aportes</p>
-                <p class="text-sm text-gold-400">Investido ${Utils.fmtMoney(calc.invested)} • Lucro ${Utils.fmtMoney(calc.profit)} • Disponível ${Utils.fmtMoney(calc.availableProfit)}</p>
+                <p class="text-sm text-gold-400">Investido ${Utils.fmtMoney(calc.invested)} • Rendimento Total ${Utils.fmtMoney(calc.rendimentoTotal)} • A Receber ${Utils.fmtMoney(calc.netToReceive)}</p>
               </div>
               <div class="flex items-center gap-2">
                 <span class="badge ${inv.status==='ativo'?'badge-active':'badge-inactive'}">${inv.status || 'ativo'}</span>
@@ -2822,7 +2964,112 @@ ${bizName}`;
       const calc = InvestorFinance.calcInvestor(inv);
       const aportes = DB.getAportesByInvestor(inv.id);
       const payments = DB.getInvestorPayments(inv.id);
-      return `<div><button onclick="viewingInvestor=null;render()" class="text-gold-500 flex items-center gap-1 text-sm mb-4"><i data-lucide="arrow-left" class="w-4 h-4"></i> Voltar</button><div class="card p-4 mb-4"><div class="flex items-center justify-between mb-3"><div><h2 class="font-semibold text-lg">${mvEscapeHtml(inv.name)}</h2><p class="text-xs text-slate-400">${mvEscapeHtml(inv.cpf)} • ${Number(inv.daily_rate||0).toFixed(2)}% ao dia</p></div><span class="badge ${inv.status==='ativo'?'badge-active':'badge-inactive'}">${inv.status || 'ativo'}</span></div><div class="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center text-sm"><div class="stat-card"><p class="text-xs text-slate-400">Investido</p><p class="font-bold text-gold-400">${Utils.fmtMoney(calc.invested)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Lucro Gerado</p><p class="font-bold text-green-400">${Utils.fmtMoney(calc.profit)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Saldo Bruto</p><p class="font-bold text-gold-400">${Utils.fmtMoney(calc.grossBalance)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Já Pago/Reaportado</p><p class="font-bold text-green-400">${Utils.fmtMoney(calc.paid)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Lucro Disponível</p><p class="font-bold text-yellow-400">${Utils.fmtMoney(calc.availableProfit)}</p></div></div><div class="flex gap-2 mt-3"><button onclick="editingInvestor=JSON.parse(JSON.stringify(DB.getInvestorById('${inv.id}')));viewingInvestor=null;render()" class="btn-outline py-2 px-3 text-xs flex-1">Editar</button><button onclick="confirmAction={type:'deleteInvestor',id:'${inv.id}',name:'${mvEscapeJs(inv.name)}'};render()" class="btn-danger py-2 px-3 text-xs">Excluir</button></div></div><div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4"><div class="card p-4"><h3 class="font-semibold mb-3">Adicionar Aporte</h3><form onsubmit="Crud.saveInvestorAporte(event,'${inv.id}')" class="space-y-2"><input type="number" step="0.01" min="0.01" id="ia-amount" class="input-field" placeholder="Valor do aporte" required><input type="date" id="ia-date" class="input-field" value="${Utils.today()}"><input id="ia-notes" class="input-field" placeholder="Observação opcional"><button class="btn-gold w-full py-2">Salvar aporte</button></form></div><div class="card p-4"><h3 class="font-semibold mb-3">Pagar Investidor</h3><form onsubmit="Crud.saveInvestorPayment(event,'${inv.id}')" class="space-y-2"><input type="number" step="0.01" min="0.01" id="ip-amount" class="input-field" placeholder="Valor pago" required><input type="date" id="ip-date" class="input-field" value="${Utils.today()}"><input id="ip-notes" class="input-field" placeholder="Observação opcional"><button class="btn-gold w-full py-2">Registrar pagamento</button></form></div></div><h3 class="font-semibold mb-2">Aportes (${aportes.length})</h3>${aportes.length === 0 ? '<p class="text-slate-500 text-sm mb-4">Nenhum aporte registrado</p>' : `<div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">${aportes.map(ap => { const c = InvestorFinance.calcAporte(ap); const canReinvest = c.days >= 30 && c.profit > 0.009; return `<div class="card p-4 ${canReinvest ? 'border-green-500/30 bg-green-500/5' : ''}"><div class="flex items-start justify-between gap-3 mb-3"><div class="min-w-0"><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(c.amount)}</p><p class="text-xs text-slate-400">Aporte em ${Utils.fmtDate(ap.date)} • ${c.days} dia(s)</p>${ap.notes ? `<p class="text-xs text-slate-500 mt-1">Obs: ${mvEscapeHtml(ap.notes)}</p>` : ''}</div><span class="badge ${canReinvest ? 'badge-active' : 'badge-pending'}">${canReinvest ? '30d+' : c.days + 'd'}</span></div><div class="grid grid-cols-2 gap-2 text-center mb-3"><div class="stat-card"><p class="text-[11px] text-slate-400">Juros Gerado</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(c.profit)}</p></div><div class="stat-card"><p class="text-[11px] text-slate-400">Saldo do Aporte</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(c.total)}</p></div></div><div class="flex gap-2 flex-wrap">${canReinvest ? `<button onclick="Crud.reinvestAporteProfit('${ap.id}')" class="btn-gold py-2 px-3 text-xs flex-1">Reaportar lucro</button>` : `<button disabled class="btn-outline py-2 px-3 text-xs flex-1 opacity-50 cursor-not-allowed">Reaportar após 30 dias</button>`}<button onclick="confirmAction={type:'deleteInvestorAporte',id:'${ap.id}',amount:'${Utils.fmtMoney(ap.amount)}'};render()" class="btn-danger py-2 px-3 text-xs flex items-center gap-1"><i data-lucide="trash-2" class="w-3 h-3"></i></button></div></div>`; }).join('')}</div>`}<h3 class="font-semibold mb-2 mt-4">Pagamentos/Reaportes (${payments.length})</h3>${payments.length === 0 ? '<p class="text-slate-500 text-sm">Nenhum pagamento registrado</p>' : payments.map(p => `<div class="card p-3 mb-2"><div class="flex justify-between items-start gap-3"><div><p class="text-sm font-medium">${Utils.fmtMoney(p.amount)} • ${Utils.fmtDate(p.date)}</p>${p.notes ? `<p class="text-xs text-slate-500">Obs: ${mvEscapeHtml(p.notes)}</p>` : ''}</div><button onclick="confirmAction={type:'deleteInvestorPayment',id:'${p.id}',amount:'${Utils.fmtMoney(p.amount)}'};render()" class="btn-danger py-1 px-2 text-xs flex items-center gap-1"><i data-lucide="trash-2" class="w-3 h-3"></i> Excluir</button></div></div>`).join('')}</div>`;
+      const cashPayments = payments.filter(p => p.payment_kind !== 'reaporte');
+      const reinvestPayments = payments.filter(p => p.payment_kind === 'reaporte');
+      const editingAp = editingInvestorAporte ? DB.getInvestorAporteById(editingInvestorAporte) : null;
+      const activeAportes = aportes.filter(ap => Number(ap.amount || 0) > 0.009);
+      const aporteOptions = activeAportes.map(ap => {
+        const c = InvestorFinance.calcAporte(ap);
+        return `<option value="${ap.id}">${Utils.fmtMoney(c.amount)} • ${Utils.fmtDate(ap.date)} • rendimento ${Utils.fmtMoney(c.profit)}</option>`;
+      }).join('');
+      const aporteFormTitle = editingAp ? 'Editar Aporte' : 'Adicionar Aporte';
+      const aporteButtonText = editingAp ? 'Salvar alteração do aporte' : 'Salvar aporte';
+      return `<div>
+        <button onclick="viewingInvestor=null;editingInvestorAporte=null;render()" class="text-gold-500 flex items-center gap-1 text-sm mb-4"><i data-lucide="arrow-left" class="w-4 h-4"></i> Voltar</button>
+        <div class="card p-4 mb-4">
+          <div class="flex items-center justify-between mb-3">
+            <div><h2 class="font-semibold text-lg">${mvEscapeHtml(inv.name)}</h2><p class="text-xs text-slate-400">${mvEscapeHtml(inv.cpf)} • ${Number(inv.daily_rate||0).toFixed(2)}% ao dia</p></div>
+            <span class="badge ${inv.status==='ativo'?'badge-active':'badge-inactive'}">${inv.status || 'ativo'}</span>
+          </div>
+          <div class="grid grid-cols-2 sm:grid-cols-6 gap-2 text-center text-sm">
+            <div class="stat-card"><p class="text-xs text-slate-400">Aplicado Ativo</p><p class="font-bold text-gold-400">${Utils.fmtMoney(calc.invested)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Rendimento Total</p><p class="font-bold text-green-400">${Utils.fmtMoney(calc.rendimentoTotal)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Saldo Bruto</p><p class="font-bold text-gold-400">${Utils.fmtMoney(calc.grossBalance)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Já Recebido</p><p class="font-bold text-green-400">${Utils.fmtMoney(calc.paidProfitCash)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Reaportado</p><p class="font-bold text-emerald-300">${Utils.fmtMoney(calc.reinvested)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">A Receber</p><p class="font-bold text-yellow-400">${Utils.fmtMoney(calc.netToReceive)}</p></div>
+          </div>
+          <p class="text-[11px] text-slate-500 mt-2">A Receber = Rendimento Total - Já Recebido. Capital aplicado e reaporte ficam separados.</p>
+          <div class="flex gap-2 mt-3">
+            <button onclick="editingInvestor=JSON.parse(JSON.stringify(DB.getInvestorById('${inv.id}')));viewingInvestor=null;editingInvestorAporte=null;render()" class="btn-outline py-2 px-3 text-xs flex-1">Editar Investidor</button>
+            <button onclick="confirmAction={type:'deleteInvestor',id:'${inv.id}',name:'${mvEscapeJs(inv.name)}'};render()" class="btn-danger py-2 px-3 text-xs">Excluir</button>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          <div class="card p-4 ${editingAp ? 'border-gold-500/40 bg-gold-500/5' : ''}">
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="font-semibold">${aporteFormTitle}</h3>
+              ${editingAp ? `<button type="button" onclick="Crud.cancelInvestorAporteEdit()" class="btn-outline py-1 px-2 text-xs">Cancelar edição</button>` : ''}
+            </div>
+            <form onsubmit="Crud.saveInvestorAporte(event,'${inv.id}')" class="space-y-2">
+              <input type="hidden" id="ia-edit-id" value="${editingAp?.id || ''}">
+              <label class="text-xs text-slate-400">Valor aplicado</label>
+              <input type="number" step="0.01" min="0" id="ia-amount" class="input-field" placeholder="Valor do aporte" value="${editingAp ? Number(editingAp.amount || 0) : ''}" required>
+              <label class="text-xs text-slate-400">Data base do aporte</label>
+              <input type="date" id="ia-date" class="input-field" value="${editingAp?.date || Utils.today()}">
+              <input id="ia-notes" class="input-field" placeholder="Observação opcional" value="${mvEscapeHtml(editingAp?.notes || '')}">
+              <button class="btn-gold w-full py-2">${aporteButtonText}</button>
+              ${editingAp ? `<p class="text-xs text-slate-500">Ao editar o valor ou a data, os juros desse aporte passam a contar pela nova data base informada.</p>` : ''}
+            </form>
+          </div>
+          <div class="card p-4">
+            <h3 class="font-semibold mb-3">Pagar Investidor</h3>
+            <form onsubmit="Crud.saveInvestorPayment(event,'${inv.id}')" class="space-y-2">
+              <label class="text-xs text-slate-400">Aporte que será pago</label>
+              <select id="ip-aporte" class="input-field"><option value="">Automático: usa o aporte com juros maior</option>${aporteOptions}</select>
+              <label class="text-xs text-slate-400">Valor pago</label>
+              <input type="number" step="0.01" min="0.01" id="ip-amount" class="input-field" placeholder="Valor pago" required>
+              <label class="text-xs text-slate-400">Data real do pagamento</label>
+              <input type="date" id="ip-date" class="input-field" value="${Utils.today()}">
+              <input id="ip-notes" class="input-field" placeholder="Observação opcional">
+              <button class="btn-gold w-full py-2">Registrar pagamento</button>
+              <p class="text-xs text-slate-500">Regra: paga primeiro os juros gerados do aporte. Se o valor for maior que os juros, a sobra reduz o saldo aplicado e os novos juros passam a contar sobre o novo valor a partir da data do pagamento.</p>
+            </form>
+          </div>
+        </div>
+
+        <h3 class="font-semibold mb-2">Aportes (${aportes.length})</h3>
+        ${aportes.length === 0 ? '<p class="text-slate-500 text-sm mb-4">Nenhum aporte registrado</p>' : `<div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">${aportes.map(ap => {
+          const c = InvestorFinance.calcAporte(ap);
+          const canReinvest = c.days >= 30 && c.profit > 0.009;
+          const isReaporte = ap.source === 'reaporte';
+          return `<div class="card p-4 ${canReinvest ? 'border-green-500/30 bg-green-500/5' : ''}">
+            <div class="flex items-start justify-between gap-3 mb-3">
+              <div class="min-w-0">
+                <p class="text-xs text-slate-400">${isReaporte ? 'Aporte de REAPORTE' : 'Aporte principal'}</p>
+                <p class="text-lg font-bold text-gold-400">${Utils.fmtMoney(c.amount)}</p>
+                <p class="text-xs text-slate-400">Base em ${Utils.fmtDate(c.baseDate)} • ${c.days} dia(s) • ${c.rate.toFixed(2)}% ao dia</p>
+                ${Number(ap.total_principal_paid || 0) > 0 ? `<p class="text-xs text-blue-300">Principal já retirado: ${Utils.fmtMoney(ap.total_principal_paid)}</p>` : ''}
+                ${Number(ap.total_profit_paid || 0) > 0 ? `<p class="text-xs text-green-300">Rendimento já recebido neste aporte: ${Utils.fmtMoney(ap.total_profit_paid)}</p>` : ''}
+                ${Number(ap.total_reinvested || 0) > 0 ? `<p class="text-xs text-emerald-300">Já reaportado deste aporte: ${Utils.fmtMoney(ap.total_reinvested)}</p>` : ''}
+                ${ap.notes ? `<p class="text-xs text-slate-500 mt-1">Obs: ${mvEscapeHtml(ap.notes)}</p>` : ''}
+              </div>
+              <span class="badge ${canReinvest ? 'badge-active' : 'badge-pending'}">${canReinvest ? '30d+' : c.days + 'd'}</span>
+            </div>
+            <div class="grid grid-cols-2 gap-2 text-center mb-3">
+              <div class="stat-card"><p class="text-[11px] text-slate-400">Rendimento Atual em Aberto</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(c.profit)}</p></div>
+              <div class="stat-card"><p class="text-[11px] text-slate-400">Saldo do Aporte</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(c.total)}</p></div>
+            </div>
+            <div class="flex gap-2 flex-wrap">
+              ${canReinvest ? `<button onclick="Crud.reinvestAporteProfit('${ap.id}')" class="btn-gold py-2 px-3 text-xs flex-1">Reaportar lucro</button>` : `<button disabled class="btn-outline py-2 px-3 text-xs flex-1 opacity-50 cursor-not-allowed">Reaportar após 30 dias</button>`}
+              <button onclick="Crud.editInvestorAporte('${ap.id}')" class="btn-outline py-2 px-3 text-xs">Editar</button>
+              <button onclick="confirmAction={type:'deleteInvestorAporte',id:'${ap.id}',amount:'${Utils.fmtMoney(ap.amount)}'};render()" class="btn-danger py-2 px-3 text-xs flex items-center gap-1"><i data-lucide="trash-2" class="w-3 h-3"></i></button>
+            </div>
+          </div>`;
+        }).join('')}</div>`}
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div>
+            <h3 class="font-semibold mb-2 mt-4">Já Pago (${cashPayments.length})</h3>
+            ${cashPayments.length === 0 ? '<p class="text-slate-500 text-sm">Nenhum pagamento em dinheiro registrado</p>' : cashPayments.map(p => `<div class="card p-3 mb-2"><div class="flex justify-between items-start gap-3"><div><p class="text-sm font-medium">${Utils.fmtMoney(p.amount)} • ${Utils.fmtDate(p.date)}</p><p class="text-xs text-slate-500">Rendimento recebido: ${Utils.fmtMoney(p.paid_profit || 0)} • Principal retirado: ${Utils.fmtMoney(p.paid_principal || 0)}</p>${p.notes ? `<p class="text-xs text-slate-500">Obs: ${mvEscapeHtml(p.notes)}</p>` : ''}</div><button onclick="confirmAction={type:'deleteInvestorPayment',id:'${p.id}',amount:'${Utils.fmtMoney(p.amount)}'};render()" class="btn-danger py-1 px-2 text-xs flex items-center gap-1"><i data-lucide="trash-2" class="w-3 h-3"></i> Excluir</button></div></div>`).join('')}
+          </div>
+          <div>
+            <h3 class="font-semibold mb-2 mt-4">Reaportado (${reinvestPayments.length})</h3>
+            ${reinvestPayments.length === 0 ? '<p class="text-slate-500 text-sm">Nenhum reaporte registrado</p>' : reinvestPayments.map(p => `<div class="card p-3 mb-2 border-emerald-500/20 bg-emerald-500/5"><div class="flex justify-between items-start gap-3"><div><p class="text-sm font-medium text-emerald-300">${Utils.fmtMoney(p.amount)} • ${Utils.fmtDate(p.date)}</p><p class="text-xs text-slate-500">Lucro convertido em novo aporte</p>${p.notes ? `<p class="text-xs text-slate-500">Obs: ${mvEscapeHtml(p.notes)}</p>` : ''}</div><button onclick="confirmAction={type:'deleteInvestorPayment',id:'${p.id}',amount:'${Utils.fmtMoney(p.amount)}'};render()" class="btn-danger py-1 px-2 text-xs flex items-center gap-1"><i data-lucide="trash-2" class="w-3 h-3"></i> Excluir</button></div></div>`).join('')}
+          </div>
+        </div>
+      </div>`;
     }
     function renderLoansTab() {
       if (editingLoan !== null) return renderLoanForm();
@@ -3409,25 +3656,29 @@ ${bizName}`;
       const calc = InvestorFinance.calcInvestor(investor);
       const aportes = DB.getAportesByInvestor(investor.id);
       const payments = DB.getInvestorPayments(investor.id);
+      const cashPayments = payments.filter(p => p.payment_kind !== 'reaporte');
+      const reinvestPayments = payments.filter(p => p.payment_kind === 'reaporte');
       return `<div class="flex flex-col h-full w-full fade-in">
         <header class="flex items-center justify-between px-4 py-3 border-b border-gold-800/20">
           <div class="flex items-center gap-2">
             <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-gold-500 to-gold-700 flex items-center justify-center"><i data-lucide="trending-up" class="w-4 h-4 text-navy-900"></i></div>
-            <div><p class="text-sm font-semibold">${investor.name}</p><p class="text-xs text-slate-400">Investidor • ${Number(investor.daily_rate||0).toFixed(2)}% ao dia</p></div>
+            <div><p class="text-sm font-semibold">${mvEscapeHtml(investor.name)}</p><p class="text-xs text-slate-400">Investidor • ${Number(investor.daily_rate||0).toFixed(2)}% ao dia</p></div>
           </div>
           <button onclick="investorLoggedIn=null;Utils.clearStates();currentScreen='home';render()" class="text-slate-400 text-xs flex items-center gap-1"><i data-lucide="log-out" class="w-4 h-4"></i></button>
         </header>
         <div class="flex-1 overflow-auto p-4">
-          <div class="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-4">
-            <div class="stat-card text-center"><p class="text-xs text-slate-400">Total Investido</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(calc.invested)}</p></div>
-            <div class="stat-card text-center"><p class="text-xs text-slate-400">Lucro Gerado</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(calc.profit)}</p></div>
+          <div class="grid grid-cols-2 sm:grid-cols-6 gap-2 mb-4">
+            <div class="stat-card text-center"><p class="text-xs text-slate-400">Aplicado Ativo</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(calc.invested)}</p></div>
+            <div class="stat-card text-center"><p class="text-xs text-slate-400">Rendimento Total</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(calc.rendimentoTotal)}</p></div>
             <div class="stat-card text-center"><p class="text-xs text-slate-400">Saldo Bruto</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(calc.grossBalance)}</p></div>
-            <div class="stat-card text-center"><p class="text-xs text-slate-400">Já Recebido</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(calc.paid)}</p></div>
-            <div class="stat-card text-center"><p class="text-xs text-slate-400">Lucro Disponível</p><p class="text-sm font-bold text-yellow-400">${Utils.fmtMoney(calc.availableProfit)}</p></div>
+            <div class="stat-card text-center"><p class="text-xs text-slate-400">Já Recebido</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(calc.paidProfitCash)}</p></div>
+            <div class="stat-card text-center"><p class="text-xs text-slate-400">Reaportado</p><p class="text-sm font-bold text-emerald-300">${Utils.fmtMoney(calc.reinvested)}</p></div>
+            <div class="stat-card text-center"><p class="text-xs text-slate-400">A Receber</p><p class="text-sm font-bold text-yellow-400">${Utils.fmtMoney(calc.netToReceive)}</p></div>
           </div>
 
+          <p class="text-[11px] text-slate-500 mb-2">A Receber = Rendimento Total - Já Recebido. Capital aplicado e reaporte ficam separados.</p>
           <div class="card p-3 mb-4 text-xs text-slate-300">
-            O rendimento é calculado em juros simples: valor do aporte × taxa diária × dias corridos. Pagamentos registrados pelo administrador aparecem como valores já recebidos e reduzem o lucro disponível.
+            O rendimento é calculado sobre o saldo ativo de cada aporte. Quando há pagamento maior que os juros gerados, a sobra reduz o valor aplicado e os novos juros passam a contar sobre o novo saldo a partir da data do pagamento.
           </div>
 
           <h3 class="font-semibold mb-2">Meus Aportes</h3>
@@ -3436,20 +3687,28 @@ ${bizName}`;
             return `<div class="card p-3 mb-3">
               <div class="flex justify-between items-start gap-3">
                 <div>
-                  <p class="text-sm font-semibold text-gold-400">${Utils.fmtMoney(c.amount)}</p>
-                  <p class="text-xs text-slate-400">Data: ${Utils.fmtDate(ap.date)} • ${c.days} dias corridos</p>
-                  <p class="text-xs text-slate-500">Lucro gerado: ${Utils.fmtMoney(c.profit)} • Saldo do aporte: ${Utils.fmtMoney(c.total)}</p>
+                  <p class="text-xs text-slate-400">${ap.source === 'reaporte' ? 'Aporte de reaporte' : 'Aporte principal'}</p>
+                  <p class="text-base font-semibold text-gold-400">${Utils.fmtMoney(c.amount)}</p>
+                  <p class="text-xs text-slate-400">Data base: ${Utils.fmtDate(c.baseDate)} • ${c.days} dias corridos</p>
+                  <p class="text-xs text-slate-500">Rendimento atual em aberto: ${Utils.fmtMoney(c.profit)} • Saldo do aporte: ${Utils.fmtMoney(c.total)}</p>
+                  ${Number(ap.total_reinvested || 0) > 0 ? `<p class="text-xs text-emerald-300">Reaportado deste aporte: ${Utils.fmtMoney(ap.total_reinvested)}</p>` : ''}
+                  ${Number(ap.total_principal_paid || 0) > 0 ? `<p class="text-xs text-blue-300">Principal já retirado: ${Utils.fmtMoney(ap.total_principal_paid)}</p>` : ''}
                 </div>
                 <span class="badge badge-active">Ativo</span>
               </div>
             </div>`;
           }).join('')}
 
-          <h3 class="font-semibold mb-2 mt-4">Valores Recebidos</h3>
-          ${payments.length === 0 ? '<p class="text-slate-500 text-center py-4">Nenhum pagamento recebido registrado</p>' : payments.map(p => `<div class="card p-3 mb-2">
-            <div class="flex justify-between"><p class="text-sm font-medium">${Utils.fmtMoney(p.amount)}</p><p class="text-xs text-slate-400">${Utils.fmtDate(p.date)}</p></div>
-            ${p.notes ? `<p class="text-xs text-slate-500">${p.notes}</p>` : ''}
-          </div>`).join('')}
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div>
+              <h3 class="font-semibold mb-2 mt-4">Já Pago</h3>
+              ${cashPayments.length === 0 ? '<p class="text-slate-500 text-center py-4">Nenhum pagamento recebido registrado</p>' : cashPayments.map(p => `<div class="card p-3 mb-2"><div class="flex justify-between"><p class="text-sm font-medium">${Utils.fmtMoney(p.amount)}</p><p class="text-xs text-slate-400">${Utils.fmtDate(p.date)}</p></div><p class="text-xs text-slate-500">Rendimento recebido: ${Utils.fmtMoney(p.paid_profit || 0)} • Principal retirado: ${Utils.fmtMoney(p.paid_principal || 0)}</p>${p.notes ? `<p class="text-xs text-slate-500">${mvEscapeHtml(p.notes)}</p>` : ''}</div>`).join('')}
+            </div>
+            <div>
+              <h3 class="font-semibold mb-2 mt-4">Reaportado</h3>
+              ${reinvestPayments.length === 0 ? '<p class="text-slate-500 text-center py-4">Nenhum reaporte registrado</p>' : reinvestPayments.map(p => `<div class="card p-3 mb-2 border-emerald-500/20 bg-emerald-500/5"><div class="flex justify-between"><p class="text-sm font-medium text-emerald-300">${Utils.fmtMoney(p.amount)}</p><p class="text-xs text-slate-400">${Utils.fmtDate(p.date)}</p></div><p class="text-xs text-slate-500">Lucro convertido em novo aporte</p>${p.notes ? `<p class="text-xs text-slate-500">${mvEscapeHtml(p.notes)}</p>` : ''}</div>`).join('')}
+            </div>
+          </div>
         </div>
       </div>`;
     }
@@ -5137,6 +5396,109 @@ ${bizName}`;
         }
       }
     };
+
+
+    /* =====================================================
+       V16 - SALDO CORRIDO VISÍVEL PARA O CLIENTE
+       - No portal do cliente, mostra vencimento do ciclo, capital usado nos juros,
+         juros atual, juros previsto até o vencimento, total previsto no vencimento
+         e total atualizado hoje.
+       - Na mensagem de cobrança do saldo corrido, separa juros no vencimento,
+         juros atual, capital contabilizado e multa.
+       ===================================================== */
+    function mvProportionalProjection(loan, inst) {
+      const today = Utils.today();
+      const dueDate = inst?.due_date || today;
+      const detToday = Finance.calcInstallmentDetails(inst, today);
+      const detAtDue = Finance.calcInstallmentDetails(inst, dueDate);
+      const client = loan ? DB.getClientById(loan.client_id) : null;
+      const dailyRate = Number(loan?.daily_rate_used ?? loan?.late_daily_rate ?? Finance.getLateDailyRate(client));
+      const interestStart = detToday.interestStartDate || inst?.interest_start_date || loan?.date || dueDate;
+      const daysUntilDue = Math.max(0, Utils.daysDiff(dueDate, today));
+      const daysFromStartToDue = Math.max(0, Utils.daysDiff(dueDate, interestStart));
+      const jurosHoje = Finance.round2(Number(detToday.totalInterestPending || 0));
+      const jurosNoVencimento = Finance.round2(Number(detAtDue.totalInterestPending || 0));
+      const jurosFuturoAteVencimento = Finance.round2(Math.max(0, jurosNoVencimento - jurosHoje));
+      const capital = Finance.round2(Number(detToday.principal || 0));
+      const multaHoje = Finance.round2(Number(detToday.accumulatedPenalty || 0));
+      const totalAteVencimento = Finance.round2(capital + jurosNoVencimento);
+      const totalAtualizadoHoje = Finance.round2(Number(detToday.totalDue || 0));
+      return { today, dueDate, interestStart, dailyRate, daysUntilDue, daysFromStartToDue, capital, jurosHoje, jurosNoVencimento, jurosFuturoAteVencimento, multaHoje, totalAteVencimento, totalAtualizadoHoje, detToday, detAtDue };
+    }
+
+    function mvRenderSaldoCorridoProjectionCard(loan, inst) {
+      if (!loan || !inst || !Finance.isProportionalLoan(loan)) return '';
+      const p = mvProportionalProjection(loan, inst);
+      const overdue = Number(p.detToday.daysLate || 0) > 0;
+      const vencimentoLabel = overdue ? 'Vencido em' : 'Vence em';
+      return `<div class="card p-3 mb-3 border-gold-500/20 bg-gold-500/5">
+        <div class="flex items-center justify-between gap-3 mb-3">
+          <div>
+            <p class="text-sm font-semibold text-gold-300">Resumo do saldo corrido</p>
+            <p class="text-xs ${overdue ? 'text-red-300 font-semibold' : 'text-slate-400'}">${vencimentoLabel}: ${Utils.fmtDate(p.dueDate)}${overdue ? ' • ' + Number(p.detToday.daysLate || 0) + ' dia(s) em atraso' : p.daysUntilDue > 0 ? ' • faltam ' + p.daysUntilDue + ' dia(s)' : ' • vence hoje'}</p>
+          </div>
+          <span class="badge ${overdue ? 'badge-overdue' : 'badge-pending'}">${overdue ? 'ATRASO' : 'CICLO ATIVO'}</span>
+        </div>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
+          <div class="stat-card"><p class="text-xs text-slate-400">Capital calculado</p><p class="font-bold text-gold-400">${Utils.fmtMoney(p.capital)}</p></div>
+          <div class="stat-card"><p class="text-xs text-slate-400">Juros atual</p><p class="font-bold text-yellow-400">${Utils.fmtMoney(p.jurosHoje)}</p></div>
+          <div class="stat-card"><p class="text-xs text-slate-400">Juros até vencimento</p><p class="font-bold text-yellow-300">${Utils.fmtMoney(p.jurosNoVencimento)}</p></div>
+          <div class="stat-card"><p class="text-xs text-slate-400">Total no vencimento</p><p class="font-bold text-red-300">${Utils.fmtMoney(p.totalAteVencimento)}</p></div>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2 text-center">
+          <div class="stat-card"><p class="text-xs text-slate-400">Juros futuro restante</p><p class="font-bold text-emerald-300">${Utils.fmtMoney(p.jurosFuturoAteVencimento)}</p><p class="text-[10px] text-slate-500">De hoje até o vencimento</p></div>
+          <div class="stat-card"><p class="text-xs text-slate-400">Multa atual</p><p class="font-bold text-red-300">${Utils.fmtMoney(p.multaHoje)}</p><p class="text-[10px] text-slate-500">Só aparece se atrasar</p></div>
+          <div class="stat-card"><p class="text-xs text-slate-400">Total atualizado hoje</p><p class="font-bold text-red-400">${Utils.fmtMoney(p.totalAtualizadoHoje)}</p><p class="text-[10px] text-slate-500">Capital + juros atual + multa</p></div>
+        </div>
+        <p class="text-[11px] text-slate-500 mt-3">Taxa usada: ${Number(p.dailyRate || 0).toFixed(2)}% ao dia sobre o principal em aberto. Início do cálculo: ${Utils.fmtDate(p.interestStart)}.</p>
+      </div>`;
+    }
+
+    const mvBuildChargeMessageV15 = mvBuildChargeMessage;
+    mvBuildChargeMessage = function(loan, installment = null) {
+      if (loan && Finance.isProportionalLoan(loan)) {
+        const client = DB.getClientById(loan.client_id);
+        const pix = DB.getConfig('pix_key', 'Não configurado');
+        const bizName = DB.getConfig('business_name', 'MV Financeira');
+        const inst = installment || mvGetLoanSummary(loan).nextPending || DB.getInstallmentsByLoan(loan.loan_id).find(i => i.status_inst !== 'pago');
+        if (!inst) return mvBuildChargeMessageV15(loan, installment);
+        const p = mvProportionalProjection(loan, inst);
+        const atrasoText = Number(p.detToday.daysLate || 0) > 0 ? `\n⚠️ Atraso: ${p.detToday.daysLate} dia(s)\nMulta atual: ${Utils.fmtMoney(p.multaHoje)}` : '';
+        return `Olá, ${client?.name || 'cliente'}!\n\nSegue a cobrança atualizada do seu empréstimo na modalidade saldo corrido.\n\n🏦 CONTRATO\nCapital contabilizado nos juros: ${Utils.fmtMoney(p.capital)}\nVencimento do ciclo: ${Utils.fmtDate(p.dueDate)}\nJuros previstos no vencimento: ${Utils.fmtMoney(p.jurosNoVencimento)}\nTotal até o vencimento: ${Utils.fmtMoney(p.totalAteVencimento)}\n\n📌 ATUALIZAÇÃO DE HOJE\nJuros atual: ${Utils.fmtMoney(p.jurosHoje)}\nJuros futuro restante até o vencimento: ${Utils.fmtMoney(p.jurosFuturoAteVencimento)}${atrasoText}\nTotal atualizado hoje: ${Utils.fmtMoney(p.totalAtualizadoHoje)}\n\n💰 FORMA DE PAGAMENTO\nPIX: ${pix}\n\nApós pagar, envie o comprovante para baixa no sistema.\n\nAtenciosamente,\n${bizName}`;
+      }
+      return mvBuildChargeMessageV15(loan, installment);
+    };
+
+    renderClientPortal = function() {
+      const client = DB.getClientById(clientLoggedIn);
+      if (!client) { clientLoggedIn = null; currentScreen = 'home'; return ''; }
+      const loans = DB.getLoansByClient(client.id).sort((a,b) => { const sa = mvGetLoanSummary(a), sb = mvGetLoanSummary(b); return (sb.overdueCount - sa.overdueCount) || new Date(b.date || '1900-01-01') - new Date(a.date || '1900-01-01'); });
+      const pix = DB.getConfig('pix_key', 'Não configurado');
+      const summaries = loans.map(loan => ({ loan, summary: mvGetLoanSummary(loan) }));
+      let totalDebt = 0, totalPrincipalOpen = 0, totalInterestOpen = 0, totalPenaltyOpen = 0, totalPaidAll = 0, overdueCount = 0;
+      summaries.forEach(({summary}) => {
+        totalDebt += summary.totalDue; totalPrincipalOpen += summary.principalOpen; totalInterestOpen += summary.interestOpen; totalPenaltyOpen += summary.penaltyOpen; overdueCount += summary.overdueCount;
+        summary.installments.forEach(inst => { totalPaidAll += Finance.getPaidTotal(inst, 'principal') + Finance.getPaidTotal(inst, 'periodInterest') + Finance.getPaidTotal(inst, 'extraInterest') + Finance.getPaidTotal(inst, 'penalty'); });
+      });
+      if (loans.length && (!clientPortalSelectedLoan || !loans.some(l => l.loan_id === clientPortalSelectedLoan))) clientPortalSelectedLoan = summaries.find(x => x.summary.pendingCount > 0)?.loan.loan_id || loans[0].loan_id;
+      const selectedPair = summaries.find(x => x.loan.loan_id === clientPortalSelectedLoan) || summaries[0];
+      const loanSelector = summaries.length > 1 ? `<div class="card p-3 mb-4"><p class="text-xs text-slate-400 mb-2">Navegue pelos empréstimos</p><div class="flex gap-2 overflow-x-auto pb-1">${summaries.map(({loan, summary}) => { const active = loan.loan_id === clientPortalSelectedLoan; const overdue = summary.overdueCount > 0; return `<button onclick="clientPortalSelectedLoan='${loan.loan_id}';render()" class="${active ? 'btn-gold' : 'btn-outline'} py-2 px-3 text-xs shrink-0 ${overdue && !active ? 'border-red-500/50 text-red-300' : ''}">#${String(loan.loan_id || '').slice(-4).toUpperCase()} • ${Utils.fmtMoney(summary.totalDue)}${overdue ? ' • ATRASO' : ''}</button>`; }).join('')}</div></div>` : '';
+      const selectedCard = selectedPair ? (() => {
+        const loan = selectedPair.loan;
+        const summary = selectedPair.summary;
+        const overdueLoan = summary.overdueCount > 0;
+        const proportionalCard = Finance.isProportionalLoan(loan) && summary.nextPending ? mvRenderSaldoCorridoProjectionCard(loan, summary.nextPending) : '';
+        return `<div class="card p-4 mb-4 ${overdueLoan ? 'border-red-500/40 bg-red-500/5' : ''}">
+          <div class="flex justify-between items-start gap-3 mb-3"><div><p class="text-xs text-slate-400">Empréstimo selecionado #${String(loan.loan_id || '').slice(-5).toUpperCase()}</p><p class="font-semibold text-gold-400">${Utils.fmtMoney(loan.amount)}</p><p class="text-xs ${overdueLoan ? 'text-red-300 font-semibold' : 'text-slate-400'}">${loan.calculation_mode==='proporcional'?'Saldo corrido':(loan.calculation_mode==='parcela_fixa'?'Parcela fixa':(loan.num_installments+'x '+loan.frequency))}${overdueLoan ? ' • ' + summary.overdueCount + ' parcela(s) em atraso' : ''}</p></div><span class="badge ${overdueLoan ? 'badge-overdue' : loan.status_loan==='ativo'?'badge-active':'badge-paid'}">${overdueLoan ? 'ATRASO' : loan.status_loan}</span></div>
+          ${proportionalCard}
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center mb-3"><div class="stat-card"><p class="text-xs text-slate-400">Valor Devido</p><p class="text-sm font-bold text-red-400">${Utils.fmtMoney(summary.totalDue)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Principal</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(summary.principalOpen)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Juros</p><p class="text-sm font-bold text-yellow-400">${Utils.fmtMoney(summary.interestOpen)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Multa</p><p class="text-sm font-bold text-red-300">${Utils.fmtMoney(summary.penaltyOpen)}</p></div></div>
+          <h4 class="text-sm font-semibold mb-2">${Finance.isProportionalLoan(loan) ? 'Ciclo do saldo corrido' : 'Parcelas deste empréstimo'}</h4>
+          ${summary.installments.map(inst => { const det = Finance.calcInstallmentDetails(inst); const isPaid = inst.status_inst === 'pago'; const isOverdue = !isPaid && det.daysLate > 0; const rowProj = Finance.isProportionalLoan(loan) ? mvProportionalProjection(loan, inst) : null; return `<div class="flex justify-between items-center py-3 border-b border-gold-800/10 text-sm gap-3 ${isOverdue ? 'bg-red-500/5 rounded-lg px-2 border border-red-500/20 mb-2' : ''}"><div><p class="font-medium">#${inst.number} - ${Utils.fmtMoney(det.totalDue)}</p><p class="text-xs ${isOverdue ? 'text-red-300 font-semibold' : 'text-slate-400'}">Venc: ${Utils.fmtDate(inst.due_date)} ${isOverdue?'('+det.daysLate+'d atraso)':''}</p>${rowProj ? `<p class="text-xs text-slate-500">Capital: ${Utils.fmtMoney(rowProj.capital)} • Juros atual: ${Utils.fmtMoney(rowProj.jurosHoje)}</p><p class="text-xs text-yellow-300">Total previsto no vencimento: ${Utils.fmtMoney(rowProj.totalAteVencimento)} • Juros futuro: ${Utils.fmtMoney(rowProj.jurosFuturoAteVencimento)}</p>` : `<p class="text-xs text-slate-500">Principal pendente: ${Utils.fmtMoney(det.principal)} • Juros: ${Utils.fmtMoney(det.totalInterestPending)}</p>`}${!isPaid && det.accumulatedPenalty > 0 ? `<p class="text-xs text-red-300">Multa: ${Utils.fmtMoney(det.accumulatedPenalty)}</p>` : ''}${Number(inst.total_penalty_discount || 0) > 0 ? `<p class="text-xs text-emerald-300">Desconto na multa: ${Utils.fmtMoney(inst.total_penalty_discount)}</p>` : ''}</div><div class="flex flex-col items-end gap-2"><span class="badge ${isPaid?'badge-paid':isOverdue?'badge-overdue':'badge-pending'}">${isPaid?'Pago':isOverdue?'Atraso':'Pendente'}</span>${!isPaid ? `<button type="button" onclick="navigator.clipboard.writeText('${mvEscapeJs(pix)}');Utils.toast('PIX copiado! Faça o pagamento e envie o comprovante.');" class="btn-gold py-1 px-3 text-xs whitespace-nowrap">Pagar PIX</button>` : ''}</div></div>`; }).join('')}
+        </div>`;
+      })() : '<p class="text-slate-500 text-center">Nenhum empréstimo</p>';
+      return `<div class="flex flex-col h-full w-full fade-in"><header class="flex items-center justify-between px-4 py-3 border-b border-gold-800/20"><div class="flex items-center gap-2 min-w-0"><div class="w-8 h-8 rounded-lg bg-gradient-to-br from-gold-500 to-gold-700 flex items-center justify-center shrink-0"><i data-lucide="user" class="w-4 h-4 text-navy-900"></i></div><div class="min-w-0"><p class="text-sm font-semibold truncate">${mvEscapeHtml(client.name)}</p><p class="text-xs text-slate-400">${mvEscapeHtml(client.cpf)}</p></div></div><button onclick="clientLoggedIn=null;Utils.clearStates();currentScreen='home';render()" class="text-slate-400 text-xs flex items-center gap-1"><i data-lucide="log-out" class="w-4 h-4"></i></button></header><div class="flex-1 overflow-auto p-4"><div class="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4"><div class="stat-card text-center"><p class="text-xs text-slate-400">Valor Devido</p><p class="text-sm font-bold text-red-400">${Utils.fmtMoney(totalDebt)}</p></div><div class="stat-card text-center"><p class="text-xs text-slate-400">Principal Aberto</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(totalPrincipalOpen)}</p></div><div class="stat-card text-center"><p class="text-xs text-slate-400">Juros Aberto</p><p class="text-sm font-bold text-yellow-400">${Utils.fmtMoney(totalInterestOpen)}</p></div><div class="stat-card text-center"><p class="text-xs text-slate-400">Multa Aberta</p><p class="text-sm font-bold text-red-300">${Utils.fmtMoney(totalPenaltyOpen)}</p></div><div class="stat-card text-center"><p class="text-xs text-slate-400">Total Pago</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(totalPaidAll)}</p></div><div class="stat-card text-center ${overdueCount > 0 ? 'border-red-500/40 bg-red-500/5' : ''}"><p class="text-xs text-slate-400">Atraso</p><p class="text-sm font-bold ${overdueCount > 0 ? 'text-red-300' : 'text-yellow-400'}">${overdueCount}</p></div></div><div class="card p-3 mb-4 flex items-center gap-2"><i data-lucide="qr-code" class="w-5 h-5 text-gold-400"></i><div class="flex-1 min-w-0"><p class="text-xs text-slate-400">PIX</p><p class="text-sm font-medium break-all">${mvEscapeHtml(pix)}</p></div><button onclick="navigator.clipboard.writeText('${mvEscapeJs(pix)}');Utils.toast('PIX copiado!')" class="btn-outline py-1 px-2 text-xs">Copiar</button></div>${loanSelector}${selectedCard}</div></div>`;
+    };
+
 </script>
 </body>
 </html>
