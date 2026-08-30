@@ -5499,6 +5499,197 @@ ${bizName}`;
       return `<div class="flex flex-col h-full w-full fade-in"><header class="flex items-center justify-between px-4 py-3 border-b border-gold-800/20"><div class="flex items-center gap-2 min-w-0"><div class="w-8 h-8 rounded-lg bg-gradient-to-br from-gold-500 to-gold-700 flex items-center justify-center shrink-0"><i data-lucide="user" class="w-4 h-4 text-navy-900"></i></div><div class="min-w-0"><p class="text-sm font-semibold truncate">${mvEscapeHtml(client.name)}</p><p class="text-xs text-slate-400">${mvEscapeHtml(client.cpf)}</p></div></div><button onclick="clientLoggedIn=null;Utils.clearStates();currentScreen='home';render()" class="text-slate-400 text-xs flex items-center gap-1"><i data-lucide="log-out" class="w-4 h-4"></i></button></header><div class="flex-1 overflow-auto p-4"><div class="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4"><div class="stat-card text-center"><p class="text-xs text-slate-400">Valor Devido</p><p class="text-sm font-bold text-red-400">${Utils.fmtMoney(totalDebt)}</p></div><div class="stat-card text-center"><p class="text-xs text-slate-400">Principal Aberto</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(totalPrincipalOpen)}</p></div><div class="stat-card text-center"><p class="text-xs text-slate-400">Juros Aberto</p><p class="text-sm font-bold text-yellow-400">${Utils.fmtMoney(totalInterestOpen)}</p></div><div class="stat-card text-center"><p class="text-xs text-slate-400">Multa Aberta</p><p class="text-sm font-bold text-red-300">${Utils.fmtMoney(totalPenaltyOpen)}</p></div><div class="stat-card text-center"><p class="text-xs text-slate-400">Total Pago</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(totalPaidAll)}</p></div><div class="stat-card text-center ${overdueCount > 0 ? 'border-red-500/40 bg-red-500/5' : ''}"><p class="text-xs text-slate-400">Atraso</p><p class="text-sm font-bold ${overdueCount > 0 ? 'text-red-300' : 'text-yellow-400'}">${overdueCount}</p></div></div><div class="card p-3 mb-4 flex items-center gap-2"><i data-lucide="qr-code" class="w-5 h-5 text-gold-400"></i><div class="flex-1 min-w-0"><p class="text-xs text-slate-400">PIX</p><p class="text-sm font-medium break-all">${mvEscapeHtml(pix)}</p></div><button onclick="navigator.clipboard.writeText('${mvEscapeJs(pix)}');Utils.toast('PIX copiado!')" class="btn-outline py-1 px-2 text-xs">Copiar</button></div>${loanSelector}${selectedCard}</div></div>`;
     };
 
+
+
+    /* =====================================================
+       V19 - COBRANÇA ÚNICA + PAGAMENTO AVULSO CORRIGIDO
+       - Uma única leitura alimenta painel e mensagem de cobrança.
+       - Parcelado separa: valor da parcela, multa e total.
+       - Saldo corrido mantém capital, juros atual, juros no vencimento e total.
+       - Avulso baixa juros primeiro; excedente baixa capital/principal.
+       ===================================================== */
+    function mvV19ChargeBreakdown(loan, inst, referenceDate = Utils.today()) {
+      if (!loan || !inst) return null;
+      const det = Finance.calcInstallmentDetails(inst, referenceDate);
+      if (Finance.isProportionalLoan(loan)) {
+        const p = mvProportionalProjection(loan, inst);
+        return { kind:'corrido', det, projection:p, dueDate: inst.due_date, daysLate: Number(det.daysLate || 0), capital: Number(p.capital || 0), jurosAtual: Number(p.jurosHoje || 0), jurosNoVencimento: Number(p.jurosNoVencimento || 0), jurosFuturo: Number(p.jurosFuturoAteVencimento || 0), multa: Number(p.multaHoje || 0), totalHoje: Number(p.totalAtualizadoHoje || 0), totalVencimento: Number(p.totalAteVencimento || 0) };
+      }
+      const valorParcelaAberta = mvRoundMoney(Number(det.principal || 0) + Number(det.totalInterestPending || 0));
+      const multa = mvRoundMoney(Number(det.accumulatedPenalty || 0));
+      return { kind:'parcelado', det, dueDate: inst.due_date, number: inst.number, daysLate: Number(det.daysLate || 0), valorOriginalParcela: Number(inst.installment_amount || 0), valorParcelaAberta, principalAberto: Number(det.principal || 0), jurosAberto: Number(det.totalInterestPending || 0), multa, total: mvRoundMoney(valorParcelaAberta + multa) };
+    }
+
+    function mvV19ChargePanelHtml(loan, inst) {
+      const b = mvV19ChargeBreakdown(loan, inst);
+      if (!b) return '';
+      if (b.kind === 'corrido') {
+        const overdue = b.daysLate > 0;
+        return `<div class="card p-3 mb-4 border-gold-500/25 bg-gold-500/5">
+          <div class="flex items-center justify-between gap-3 mb-2">
+            <div><p class="text-sm font-semibold text-gold-300">Painel de cobrança do saldo corrido</p><p class="text-xs ${overdue ? 'text-red-300 font-semibold' : 'text-slate-400'}">Vencimento: ${Utils.fmtDate(b.dueDate)}${overdue ? ' • ' + b.daysLate + ' dia(s) em atraso' : ''}</p></div>
+            <span class="badge ${overdue ? 'badge-overdue' : 'badge-pending'}">${overdue ? 'ATRASO' : 'ATUAL'}</span>
+          </div>
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
+            <div class="stat-card"><p class="text-xs text-slate-400">Capital</p><p class="font-bold text-gold-400">${Utils.fmtMoney(b.capital)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Juros atual</p><p class="font-bold text-yellow-400">${Utils.fmtMoney(b.jurosAtual)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Juros no vencimento</p><p class="font-bold text-yellow-300">${Utils.fmtMoney(b.jurosNoVencimento)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Total hoje</p><p class="font-bold text-red-400">${Utils.fmtMoney(b.totalHoje)}</p></div>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2 text-center">
+            <div class="stat-card"><p class="text-xs text-slate-400">Juros futuro</p><p class="font-bold text-emerald-300">${Utils.fmtMoney(b.jurosFuturo)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Multa</p><p class="font-bold text-red-300">${Utils.fmtMoney(b.multa)}</p></div>
+            <div class="stat-card"><p class="text-xs text-slate-400">Total no vencimento</p><p class="font-bold text-gold-300">${Utils.fmtMoney(b.totalVencimento)}</p></div>
+          </div>
+        </div>`;
+      }
+      const overdue = b.daysLate > 0;
+      return `<div class="card p-3 mb-4 ${overdue ? 'border-red-500/40 bg-red-500/5' : 'border-gold-500/25 bg-gold-500/5'}">
+        <div class="flex items-center justify-between gap-3 mb-2">
+          <div><p class="text-sm font-semibold ${overdue ? 'text-red-300' : 'text-gold-300'}">Painel de cobrança da parcela #${b.number}</p><p class="text-xs ${overdue ? 'text-red-300 font-semibold' : 'text-slate-400'}">Vencimento: ${Utils.fmtDate(b.dueDate)}${overdue ? ' • ' + b.daysLate + ' dia(s) em atraso' : ''}</p></div>
+          <span class="badge ${overdue ? 'badge-overdue' : 'badge-pending'}">${overdue ? 'ATRASO' : 'PENDENTE'}</span>
+        </div>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
+          <div class="stat-card"><p class="text-xs text-slate-400">Valor da parcela</p><p class="font-bold text-gold-400">${Utils.fmtMoney(b.valorParcelaAberta)}</p></div>
+          <div class="stat-card"><p class="text-xs text-slate-400">Principal</p><p class="font-bold text-gold-300">${Utils.fmtMoney(b.principalAberto)}</p></div>
+          <div class="stat-card"><p class="text-xs text-slate-400">Juros</p><p class="font-bold text-yellow-400">${Utils.fmtMoney(b.jurosAberto)}</p></div>
+          <div class="stat-card"><p class="text-xs text-slate-400">Multa</p><p class="font-bold text-red-300">${Utils.fmtMoney(b.multa)}</p></div>
+        </div>
+        <div class="stat-card mt-2 text-center"><p class="text-xs text-slate-400">Total para cobrança</p><p class="text-xl font-bold text-red-400">${Utils.fmtMoney(b.total)}</p><p class="text-[10px] text-slate-500">Parcela + multa em atraso</p></div>
+      </div>`;
+    }
+
+    const mvBuildChargeMessageV19Base = mvBuildChargeMessage;
+    mvBuildChargeMessage = function(loan, installment = null) {
+      const inst = installment || mvGetLoanSummary(loan).nextPending || DB.getInstallmentsByLoan(loan.loan_id).find(i => i.status_inst !== 'pago');
+      if (!loan || !inst) return mvBuildChargeMessageV19Base(loan, installment);
+      const client = DB.getClientById(loan.client_id);
+      const pix = DB.getConfig('pix_key', 'Não configurado');
+      const bizName = DB.getConfig('business_name', 'MV Financeira');
+      const b = mvV19ChargeBreakdown(loan, inst);
+      if (!b) return mvBuildChargeMessageV19Base(loan, installment);
+      if (b.kind === 'corrido') {
+        const atrasoText = b.daysLate > 0 ? `\n⚠️ Atraso: ${b.daysLate} dia(s)\nMulta atual: ${Utils.fmtMoney(b.multa)}` : '';
+        return `Olá, ${client?.name || 'cliente'}!\n\nSegue a cobrança atualizada do seu empréstimo na modalidade saldo corrido.\n\n🏦 CONTRATO\nCapital contabilizado nos juros: ${Utils.fmtMoney(b.capital)}\nVencimento do ciclo: ${Utils.fmtDate(b.dueDate)}\nJuros no dia do vencimento: ${Utils.fmtMoney(b.jurosNoVencimento)}\nTotal até o vencimento: ${Utils.fmtMoney(b.totalVencimento)}\n\n📌 ATUALIZAÇÃO DE HOJE\nJuros atual: ${Utils.fmtMoney(b.jurosAtual)}\nJuros futuro restante até o vencimento: ${Utils.fmtMoney(b.jurosFuturo)}${atrasoText}\nTotal atualizado hoje: ${Utils.fmtMoney(b.totalHoje)}\n\n💰 FORMA DE PAGAMENTO\nPIX: ${pix}\n\nApós pagar, envie o comprovante para baixa no sistema.\n\nAtenciosamente,\n${bizName}`;
+      }
+      const atrasoText = b.daysLate > 0 ? `\nDias em atraso: ${b.daysLate}\nMulta em atraso: ${Utils.fmtMoney(b.multa)}` : '\nDias em atraso: 0\nMulta em atraso: R$ 0,00';
+      return `Olá, ${client?.name || 'cliente'}!\n\nSegue a cobrança da sua parcela #${b.number}.\n\n📌 PARCELA\nValor da parcela: ${Utils.fmtMoney(b.valorParcelaAberta)}\nVencimento: ${Utils.fmtDate(b.dueDate)}${atrasoText}\n\n💰 TOTAL PARA PAGAMENTO\nParcela + multa: ${Utils.fmtMoney(b.total)}\n\nFORMA DE PAGAMENTO\nPIX: ${pix}\n\nApós pagar, envie o comprovante para baixa no sistema.\n\nAtenciosamente,\n${bizName}`;
+    };
+
+    const renderLoanDetailV19Base = renderLoanDetail;
+    renderLoanDetail = function() {
+      const html = renderLoanDetailV19Base();
+      const loan = viewingLoan ? DB.getLoanById(viewingLoan) : null;
+      if (!loan) return html;
+      Finance.ensureInstallmentsForLoan(loan);
+      const next = mvGetLoanSummary(loan).nextPending;
+      if (!next) return html;
+      const panel = mvV19ChargePanelHtml(loan, next);
+      const marker = '<h3 class="font-semibold mb-2">Parcelas</h3>';
+      return html.includes(marker) ? html.replace(marker, panel + marker) : html;
+    };
+
+    function mvV19ApplyAvulsoPayment(e) {
+      e.preventDefault();
+      const instId = activeModal?.instId || activeModal?.inst?.id;
+      const paymentDate = document.getElementById('pay-date')?.value || Utils.today();
+      const nextDueDate = document.getElementById('pay-next-due')?.value || '';
+      if (!instId) return Utils.toast('Parcela não selecionada', 'error');
+      const inst = DB.getInstallmentById(instId);
+      if (!inst) return Utils.toast('Parcela não encontrada', 'error');
+      const loan = DB.getLoanByKey(inst.loan_id_inst);
+      if (!loan) return Utils.toast('Empréstimo não encontrado', 'error');
+      const currentDueDate = document.getElementById('pay-current-due')?.value || inst.due_date || paymentDate;
+      if (currentDueDate !== inst.due_date) DB.updateInstallment(inst.id, { due_date: currentDueDate, due_date_manual_updated_at: new Date().toISOString() });
+      const workingInst = { ...inst, due_date: currentDueDate };
+      const isProportional = Finance.isProportionalLoan(loan);
+      const amountTyped = mvGetAvulsoValue();
+      if (amountTyped <= 0) return Utils.toast('Informe o valor do pagamento avulso.', 'error');
+
+      // Pagamento avulso é calculado pela DATA REAL selecionada: baixa juros aberto naquela data e o excedente vai ao capital.
+      const detOriginal = Finance.calcInstallmentDetails(workingInst, paymentDate);
+      const split = mvSimulateAvulsoSplit(detOriginal, amountTyped);
+      if (split.amount <= 0) return Utils.toast('Não há juros ou capital em aberto para aplicar esse pagamento avulso.', 'error');
+
+      const cumulativePrincipal = mvRoundMoney(Finance.getPaidTotal(inst, 'principal') + split.paidToPrincipal);
+      const cumulativePeriodInterest = mvRoundMoney(Finance.getPaidTotal(inst, 'periodInterest') + split.paidToPeriodInterest);
+      const cumulativeExtraInterest = mvRoundMoney(Finance.getPaidTotal(inst, 'extraInterest') + split.paidToExtraInterest);
+      const cumulativePenalty = mvRoundMoney(Finance.getPaidTotal(inst, 'penalty'));
+
+      let patch = {
+        due_date: currentDueDate,
+        paid_principal: mvRoundMoney(Number(inst.paid_principal || 0) + split.paidToPrincipal),
+        paid_period_interest: mvRoundMoney(Number(inst.paid_period_interest || 0) + split.paidToPeriodInterest),
+        paid_extra_interest: mvRoundMoney(Number(inst.paid_extra_interest || 0) + split.paidToExtraInterest),
+        paid_penalty: mvRoundMoney(Number(inst.paid_penalty || 0)),
+        total_paid_principal: cumulativePrincipal,
+        total_paid_period_interest: cumulativePeriodInterest,
+        total_paid_extra_interest: cumulativeExtraInterest,
+        total_paid_penalty: cumulativePenalty,
+        last_payment_date: paymentDate
+      };
+
+      const tempInst = { ...workingInst, ...patch };
+      const detAfter = Finance.calcInstallmentDetails(tempInst, paymentDate);
+      const remainingPrincipalAfterPayment = mvRoundMoney(Number(detAfter.principal || 0));
+      const jurosQuitados = Number(detAfter.totalInterestPending || 0) <= 0.009;
+      const multaAberta = Number(detAfter.accumulatedPenalty || 0) > 0.009;
+      const fullyPaid = remainingPrincipalAfterPayment <= 0.009 && jurosQuitados && !multaAberta;
+      let newDue = currentDueDate;
+
+      if (fullyPaid) {
+        patch = { ...patch, status_inst: 'pago' };
+        Utils.toast('Pagamento avulso quitou juros e capital desta parcela.', 'success');
+      } else if (isProportional && jurosQuitados) {
+        const baseDateForNextDue = new Date(paymentDate + 'T12:00:00') <= new Date(currentDueDate + 'T12:00:00') ? currentDueDate : paymentDate;
+        newDue = nextDueDate || Finance.getAutomaticNextDueDate(loan, baseDateForNextDue);
+        patch = {
+          ...patch,
+          original_principal_before_recalc: Number(inst.original_principal_before_recalc ?? inst.principal ?? 0),
+          original_interest_before_recalc: Number(inst.original_interest_before_recalc ?? inst.interest ?? 0),
+          principal: remainingPrincipalAfterPayment,
+          interest: 0,
+          installment_amount: remainingPrincipalAfterPayment,
+          interest_start_date: paymentDate,
+          paid_principal: 0,
+          paid_period_interest: 0,
+          paid_extra_interest: 0,
+          paid_penalty: 0,
+          start_balance: remainingPrincipalAfterPayment,
+          end_balance: 0,
+          due_date: newDue,
+          last_payment_date: '',
+          status_inst: 'pendente'
+        };
+        Utils.toast('Avulso aplicado: juros baixados e sobra abatida do capital. Novo ciclo atualizado.', 'success');
+      } else {
+        patch = { ...patch, status_inst: 'pendente' };
+        Utils.toast('Avulso aplicado: juros baixados primeiro e sobra abatida do capital.', 'success');
+      }
+
+      DB.addPayment({
+        id: Utils.uid(), type: 'payment', payment_id: Utils.uid(), installment_id_pay: inst.id, loan_id_pay: inst.loan_id_inst,
+        payment_amount: split.amount, payment_date: paymentDate, payment_cycle_reference_date: paymentDate,
+        payment_type: 'avulso', payment_split_version: 19, previous_due_date: currentDueDate, due_date_before_payment: currentDueDate, new_due_date: newDue !== currentDueDate ? newDue : '',
+        paid_to_principal: split.paidToPrincipal, paid_to_period_interest: split.paidToPeriodInterest, paid_to_extra_interest: split.paidToExtraInterest, paid_to_penalty: 0,
+        penalty_discount_percent: 0, penalty_discount_value: 0, paid_extra_to_future_installments: 0, normal_excess_unallocated: split.unused,
+        observacao: 'Pagamento avulso: baixa juros primeiro; excedente abate capital/principal. Multa permanece separada.'
+      });
+      DB.updateInstallment(inst.id, patch);
+      const allInst = DB.getInstallmentsByLoan(inst.loan_id_inst);
+      const allPaid = allInst.length > 0 && allInst.every(i => i.id === inst.id ? patch.status_inst === 'pago' : i.status_inst === 'pago');
+      DB.updateLoan(loan.id, { status_loan: allPaid ? 'quitado' : 'ativo' });
+      activeModal = null;
+      render();
+    }
+
+    const processPaymentV19Base = Crud.processPayment;
+    Crud.processPayment = function(e) {
+      const type = document.getElementById('pay-type')?.value || 'integral';
+      if (type === 'avulso') return mvV19ApplyAvulsoPayment(e);
+      return processPaymentV19Base(e);
+    };
+
 </script>
 </body>
 </html>
