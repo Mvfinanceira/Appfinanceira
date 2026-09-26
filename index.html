@@ -5690,6 +5690,266 @@ ${bizName}`;
       return processPaymentV19Base(e);
     };
 
+
+
+    /* =====================================================
+       V20 - WHATSAPP + BUSCA NO EMPRÉSTIMO + DESCONTO ANTECIPADO
+       1) Botão wa.me usando telefone do cadastro do cliente.
+       2) Busca de cliente dentro do cadastro de empréstimo.
+       3) Botão novo empréstimo dentro da pasta do cliente.
+       4) Desconto antecipado para parcelas fixas/parceladas sem reduzir capital.
+       ===================================================== */
+    if (typeof window.loanClientSearchQuery === 'undefined') window.loanClientSearchQuery = '';
+
+    function mvDigitsOnly(v) { return String(v || '').replace(/\D/g, ''); }
+    function mvClientWhatsAppNumber(client) {
+      let d = mvDigitsOnly(client?.phone || client?.whatsapp || '');
+      if (!d) return '';
+      if (d.length === 10 || d.length === 11) d = '55' + d;
+      if (d.length >= 12 && !d.startsWith('55')) d = '55' + d;
+      return d;
+    }
+    function mvOpenWhatsAppCharge(loanKey, instId = '') {
+      const loan = DB.getLoanByKey(loanKey);
+      if (!loan) return Utils.toast('Empréstimo não encontrado para enviar cobrança.', 'error');
+      const client = DB.getClientById(loan.client_id);
+      const phone = mvClientWhatsAppNumber(client);
+      if (!phone) return Utils.toast('Cliente sem telefone/WhatsApp cadastrado. Cadastre com DDD.', 'error');
+      const inst = instId ? DB.getInstallmentById(instId) : null;
+      const msg = mvBuildChargeMessage(loan, inst);
+      const url = 'https://wa.me/' + phone + '?text=' + encodeURIComponent(msg);
+      window.open(url, '_blank', 'noopener,noreferrer');
+    }
+    window.mvOpenWhatsAppCharge = mvOpenWhatsAppCharge;
+
+    const showMessageModalV20Base = showMessageModal;
+    showMessageModal = function() {
+      const old = document.getElementById('msg-modal');
+      if (old) old.remove();
+      const loan = DB.getLoanByKey(activeModal?.loanKey);
+      if (!loan) return showMessageModalV20Base();
+      Finance.ensureInstallmentsForLoan(loan);
+      const installment = activeModal.instId ? DB.getInstallmentById(activeModal.instId) : null;
+      const client = DB.getClientById(loan.client_id);
+      const phone = mvClientWhatsAppNumber(client);
+      const msg = mvBuildChargeMessage(loan, installment);
+      const safeMsg = mvEscapeHtml(msg);
+      const title = installment ? `Cobrança da Parcela #${installment.number}` : 'Mensagem de Cobrança do Contrato';
+      const div = document.createElement('div');
+      div.className = 'modal-overlay';
+      div.id = 'msg-modal';
+      div.innerHTML = `<div class="modal-content fade-in max-h-screen overflow-y-auto">
+        <h3 class="heading-font text-lg gold-gradient mb-2">${title}</h3>
+        <p class="text-xs text-slate-400 mb-3">Mensagem pronta para copiar ou enviar direto no WhatsApp.</p>
+        ${phone ? `<p class="text-xs text-green-300 mb-2">WhatsApp cadastrado: +${phone}</p>` : `<p class="text-xs text-red-300 mb-2">Cliente sem telefone/WhatsApp cadastrado com DDD.</p>`}
+        <textarea class="input-field mb-3" rows="16" id="msg-text" readonly>${safeMsg}</textarea>
+        <div class="flex gap-2 flex-wrap">
+          <button onclick="activeModal=null;document.getElementById('msg-modal')?.remove()" class="btn-outline py-2 flex-1">Fechar</button>
+          <button onclick="navigator.clipboard.writeText(document.getElementById('msg-text').value);Utils.toast('Cobrança copiada!','success')" class="btn-gold py-2 flex-1 flex items-center justify-center gap-1"><i data-lucide="copy" class="w-4 h-4"></i> Copiar</button>
+          <button onclick="mvOpenWhatsAppCharge('${loan.loan_id}','${installment?.id || ''}')" class="btn-gold py-2 flex-1 flex items-center justify-center gap-1 ${phone ? '' : 'opacity-60'}"><i data-lucide="message-circle" class="w-4 h-4"></i> WhatsApp</button>
+        </div>
+      </div>`;
+      document.body.appendChild(div);
+      lucide.createIcons();
+    };
+
+    function mvStartNewLoanForClient(clientId) {
+      const c = DB.getClientById(clientId);
+      editingLoan = { client_id: clientId };
+      viewingLoan = null;
+      viewingClient = null;
+      adminTab = 'loans';
+      window.loanClientSearchQuery = c?.name || '';
+      render();
+    }
+    window.mvStartNewLoanForClient = mvStartNewLoanForClient;
+
+    const renderLoanFormV20Base = renderLoanForm;
+    renderLoanForm = function() {
+      const l = editingLoan || {};
+      const isEdit = !!l.id;
+      const allClients = DB.getClients().filter(c => c.status === 'ativo' || c.id === l.client_id);
+      const term = mvNormalizeText(window.loanClientSearchQuery || '');
+      let clients = term ? allClients.filter(c => mvNormalizeText(`${c.name || ''} ${c.cpf || ''} ${c.phone || ''}`).includes(term)) : allClients;
+      if (l.client_id && !clients.some(c => c.id === l.client_id)) {
+        const selected = DB.getClientById(l.client_id);
+        if (selected) clients = [selected, ...clients];
+      }
+      const selectedClient = l.client_id ? DB.getClientById(l.client_id) : null;
+      return `<div>
+        <button onclick="editingLoan=null;loanClientSearchQuery='';render()" class="text-gold-500 flex items-center gap-1 text-sm mb-4"><i data-lucide="arrow-left" class="w-4 h-4"></i> Voltar</button>
+        <h2 class="text-lg font-semibold mb-2">${isEdit ? 'Editar Empréstimo' : 'Novo Empréstimo'}</h2>
+        ${isEdit ? '<div class="card p-3 mb-4 text-xs text-yellow-200 border-yellow-400/30 bg-yellow-400/5">A edição recalcula valores, prazos, taxa e parcelas usando o mesmo contrato. Pagamentos já lançados ficam no histórico e as parcelas são ajustadas pelo número da parcela.</div>' : ''}
+        ${selectedClient ? `<div class="card p-3 mb-3 border-gold-500/20 bg-gold-500/5"><p class="text-xs text-slate-400">Cliente selecionado</p><p class="font-semibold text-gold-300">${mvEscapeHtml(selectedClient.name)}</p><p class="text-xs text-slate-500">${mvEscapeHtml(selectedClient.cpf || '')}${selectedClient.phone ? ' • ' + mvEscapeHtml(selectedClient.phone) : ''}</p></div>` : ''}
+        <form onsubmit="Crud.saveLoan(event)" class="space-y-3">
+          <div class="card p-3">
+            <label class="text-xs text-slate-400">Pesquisar cliente</label>
+            <input class="input-field mt-1" value="${mvEscapeHtml(window.loanClientSearchQuery || '')}" placeholder="Digite nome, CPF ou telefone" oninput="loanClientSearchQuery=this.value;mvDebouncedRender('loan-client-search',180)" autocomplete="off">
+            <p class="text-[11px] text-slate-500 mt-1">Mostrando ${clients.length}/${allClients.length} cliente(s). Pesquise para encontrar rápido.</p>
+          </div>
+          <div><label class="text-xs text-slate-400">Cliente *</label>
+            <select class="input-field" id="lf-client" onchange="const c=DB.getClientById(this.value); if(c){loanClientSearchQuery=c.name||'';} updateLoanRatePlaceholder()" required>
+              <option value="">-- Selecione um cliente --</option>
+              ${clients.map(c => `<option value="${c.id}" ${l.client_id===c.id?'selected':''}>${mvEscapeHtml(c.name)}${c.cpf ? ' - ' + mvEscapeHtml(c.cpf) : ''}</option>`).join('')}
+            </select>
+          </div>
+          <div><label class="text-xs text-slate-400">Valor *</label><input type="number" step="0.01" min="0.01" class="input-field" id="lf-amount" value="${l.amount||''}" oninput="updateLoanRatePlaceholder()" required></div>
+          <div><label class="text-xs text-slate-400">Tipo de cálculo</label>
+            <select class="input-field" id="lf-calc-mode" onchange="updateLoanRatePlaceholder()">
+              <option value="price" ${(l.calculation_mode||'price')==='price'?'selected':''}>Tabela Price - parcelas fixas</option>
+              <option value="parcela_fixa" ${l.calculation_mode==='parcela_fixa'?'selected':''}>Parcela Fixa - calcular juros pelo valor da parcela</option>
+              <option value="proporcional" ${l.calculation_mode==='proporcional'?'selected':''}>Saldo corrido proporcional</option>
+            </select>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div><label class="text-xs text-slate-400">Prazo de cobrança</label><select class="input-field" id="lf-freq" onchange="updateLoanRatePlaceholder()"><option value="diario" ${l.frequency==='diario'?'selected':''}>Diário</option><option value="semanal" ${l.frequency==='semanal'?'selected':''}>Semanal</option><option value="quinzenal" ${l.frequency==='quinzenal'?'selected':''}>Quinzena</option><option value="mensal" ${(l.frequency||'mensal')==='mensal'?'selected':''}>Mensal</option></select></div>
+            <div><label class="text-xs text-slate-400">Nº Parcelas *</label><input type="number" min="1" class="input-field" id="lf-inst" value="${l.num_installments||12}" oninput="updateLoanRatePlaceholder()" required></div>
+          </div>
+          <div><label class="text-xs text-slate-400" id="lf-rate-label">% cobrada no prazo escolhido</label><input type="number" step="0.01" min="0" class="input-field" id="lf-rate" data-auto-rate="1" value="${Number(l.rate_used ?? 15).toFixed(2)}" readonly required></div>
+          <p class="text-xs text-slate-500 -mt-2" id="lf-rate-help">A taxa vem do nível do cliente e converte automático pelo prazo.</p>
+          <div><label class="text-xs text-slate-400">Multa de atraso diária (%)</label><input type="number" step="0.01" min="0" class="input-field" id="lf-penalty-rate" value="${l.penalty_daily_rate ?? DB.getConfig('default_penalty_daily_rate','1.00')}" required><p class="text-xs text-slate-500 mt-1">Essa % fica gravada somente neste empréstimo.</p></div>
+          <div id="lf-fixed-wrap" style="display:${l.calculation_mode==='parcela_fixa'?'block':'none'}"><label class="text-xs text-slate-400">Valor da parcela fixa *</label><input type="number" step="0.01" min="0.01" class="input-field" id="lf-fixed-payment" value="${l.fixed_installment_value || ''}" placeholder="Ex: 350,00" oninput="updateLoanRatePlaceholder()"><p class="text-xs text-slate-500 mt-1">Neste modo você informa a parcela desejada, e o sistema calcula a taxa/juros equivalente no caminho inverso.</p></div>
+          <div class="card p-3 text-xs text-slate-300" id="lf-preview">Selecione cliente, valor, prazo e parcelas para ver a simulação.</div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3"><div><label class="text-xs text-slate-400">Data Empréstimo</label><input type="date" class="input-field" id="lf-date" value="${l.date || Utils.today()}"></div><div><label class="text-xs text-slate-400">1ª Parcela</label><input type="date" class="input-field" id="lf-first" value="${l.first_due || ''}"></div></div>
+          <button type="submit" class="btn-gold w-full py-3">${isEdit ? 'Salvar alterações do empréstimo' : 'Criar Empréstimo'}</button>
+        </form>
+      </div>`;
+    };
+
+    const renderLoansTabV20Base = renderLoansTab;
+    renderLoansTab = function() {
+      if (editingLoan !== null) return renderLoanForm();
+      if (viewingLoan) return renderLoanDetail();
+      const loans = DB.getLoans();
+      const safeSearch = mvEscapeHtml(loanSearchQuery);
+      const searchTerm = mvNormalizeText(loanSearchQuery);
+      const filteredLoans = searchTerm ? loans.filter(l => {
+        const client = DB.getClientById(l.client_id);
+        const summary = mvGetLoanSummary(l);
+        const statusText = summary.overdueCount > 0 ? 'atraso atrasado vermelho' : 'em dia ativo quitado';
+        return mvNormalizeText(`${client?.name || ''} ${client?.cpf || ''} ${client?.phone || ''} ${l.loan_id || ''} ${l.amount || ''} ${statusText}`).includes(searchTerm);
+      }) : loans;
+      const grouped = filteredLoans.reduce((acc, loan) => { const key = loan.client_id || 'sem-cliente'; if (!acc[key]) acc[key] = []; acc[key].push(loan); return acc; }, {});
+      const clientGroups = Object.keys(grouped).map(clientId => {
+        const client = DB.getClientById(clientId);
+        const clientLoans = grouped[clientId].sort((a,b) => new Date(b.date || '1900-01-01') - new Date(a.date || '1900-01-01'));
+        const totalAmount = clientLoans.reduce((sum, l) => sum + Number(l.amount || 0), 0);
+        const totalDue = clientLoans.reduce((sum, l) => sum + mvGetLoanSummary(l).totalDue, 0);
+        const overdueCount = clientLoans.reduce((sum, l) => sum + mvGetLoanSummary(l).overdueCount, 0);
+        const activeCount = clientLoans.filter(l => l.status_loan === 'ativo').length;
+        const paidCount = clientLoans.filter(l => l.status_loan === 'quitado').length;
+        const lastLoanDate = clientLoans[0]?.date || '';
+        return { clientId, client, clientLoans, totalAmount, totalDue, overdueCount, activeCount, paidCount, lastLoanDate };
+      }).sort((a,b) => (b.overdueCount - a.overdueCount) || new Date(b.lastLoanDate || '1900-01-01') - new Date(a.lastLoanDate || '1900-01-01'));
+      const renderLoanCard = (l, compact=false) => {
+        const summary = mvGetLoanSummary(l);
+        const overdue = summary.overdueCount > 0;
+        const client = DB.getClientById(l.client_id);
+        return `<div class="card ${compact ? '' : 'card-hover'} p-${compact ? '3' : '4'} mb-3 ${compact ? 'ml-0 sm:ml-6 border-gold-800/20' : ''} ${overdue ? 'border-red-500/40 bg-red-500/5' : ''}" onclick="viewingLoan='${l.id}';adminTab='loans';render()"><div class="flex items-center justify-between gap-3"><div class="min-w-0">${!compact ? `<p class="font-semibold truncate">${mvEscapeHtml(client?.name || 'Cliente')}</p>` : `<p class="text-xs text-slate-400">Empréstimo #${String(l.loan_id || '').slice(-5).toUpperCase()}</p>`}<p class="text-sm text-gold-400">${Utils.fmtMoney(l.amount)} • ${l.calculation_mode==='proporcional'?'Saldo corrido':(l.calculation_mode==='parcela_fixa'?'Parcela fixa':(l.num_installments+'x '+l.frequency))} • ${Number(l.rate_used||0).toFixed(2)}%</p><p class="text-xs ${overdue ? 'text-red-300 font-semibold' : 'text-slate-400'}">${overdue ? '⚠ ' + summary.overdueCount + ' parcela(s) em atraso • ' + Utils.fmtMoney(summary.overdueAmount) : 'Criado em ' + Utils.fmtDate(l.date)}</p><p class="text-xs text-slate-500">Valor devido: ${Utils.fmtMoney(summary.totalDue)} • Pendentes: ${summary.pendingCount}</p></div><span class="badge ${overdue ? 'badge-overdue' : l.status_loan==='ativo'?'badge-active':'badge-paid'} shrink-0">${overdue ? 'ATRASO' : l.status_loan}</span></div></div>`;
+      };
+      return `<div><div class="flex items-center justify-between mb-4 gap-3"><h2 class="text-lg font-semibold">Empréstimos <span class="text-slate-500 text-sm">(${filteredLoans.length}/${loans.length})</span></h2><button onclick="editingLoan={};loanClientSearchQuery='';render()" class="btn-gold py-2 px-4 text-sm flex items-center gap-1"><i data-lucide="plus" class="w-4 h-4"></i> Novo</button></div><div class="card mv-search-card mb-4"><label class="text-xs text-slate-400 mb-2 block">Buscar empréstimo</label><div class="mv-search-inner"><span class="mv-search-icon">⌕</span><input class="mv-search-input input-field" value="${safeSearch}" placeholder="Cliente, CPF, código, valor ou atraso" oninput="loanSearchQuery=this.value;mvDebouncedRender('loans',220)" autocomplete="off">${loanSearchQuery ? `<button onclick="loanSearchQuery='';render()" class="btn-outline text-xs py-1 px-2">Limpar</button>` : ''}</div></div>${loans.length === 0 ? '<p class="text-slate-500 text-center py-8">Nenhum empréstimo</p>' : filteredLoans.length === 0 ? '<p class="text-slate-500 text-center py-8">Nenhum empréstimo encontrado.</p>' : clientGroups.map(group => { const open = !!expandedLoanFolders[group.clientId] || loanSearchQuery; return `<div class="card p-4 mb-3 ${group.overdueCount > 0 ? 'border-red-500/40 bg-red-500/5' : ''}"><div class="flex items-center justify-between gap-3 cursor-pointer" onclick="expandedLoanFolders['${group.clientId}'] = !expandedLoanFolders['${group.clientId}']; render()"><div class="flex items-center gap-3 min-w-0"><div class="w-10 h-10 rounded-xl ${group.overdueCount > 0 ? 'bg-red-500/15 border border-red-500/30' : 'bg-gold-500/15 border border-gold-500/25'} flex items-center justify-center shrink-0"><i data-lucide="${open ? 'folder-open' : 'folder'}" class="w-5 h-5 ${group.overdueCount > 0 ? 'text-red-300' : 'text-gold-400'}"></i></div><div class="min-w-0"><p class="font-semibold truncate">${mvEscapeHtml(group.client?.name || 'Cliente sem cadastro')}</p><p class="text-xs ${group.overdueCount > 0 ? 'text-red-300 font-semibold' : 'text-slate-400'}">${group.clientLoans.length} empréstimos • ${group.activeCount} ativos • ${group.paidCount} quitados${group.overdueCount > 0 ? ' • ' + group.overdueCount + ' atraso(s)' : ''}</p><p class="text-sm text-gold-400">Emprestado: ${Utils.fmtMoney(group.totalAmount)} • Devido: ${Utils.fmtMoney(group.totalDue)}</p></div></div><div class="flex items-center gap-2 shrink-0"><span class="badge ${group.overdueCount > 0 ? 'badge-overdue' : group.activeCount > 0 ? 'badge-active' : 'badge-paid'}">${group.overdueCount > 0 ? 'ATRASO' : group.activeCount > 0 ? 'ativo' : 'quitado'}</span><i data-lucide="${open ? 'chevron-up' : 'chevron-down'}" class="w-4 h-4 text-slate-400"></i></div></div>${group.client ? `<button onclick="event.stopPropagation();mvStartNewLoanForClient('${group.clientId}')" class="btn-gold w-full py-2 mt-3 text-sm flex items-center justify-center gap-2"><i data-lucide="plus" class="w-4 h-4"></i> Novo empréstimo para ${mvEscapeHtml(group.client.name)}</button>` : ''}${open ? `<div class="mt-4 pt-3 border-t border-gold-800/20">${group.clientLoans.map(l => renderLoanCard(l, true)).join('')}</div>` : ''}</div>`; }).join('')}</div>`;
+    };
+
+    const renderClientDetailV20Base = renderClientDetail;
+    renderClientDetail = function() {
+      const html = renderClientDetailV20Base();
+      const c = viewingClient ? DB.getClientById(viewingClient) : null;
+      if (!c) return html;
+      const marker = `<h3 class="font-semibold mb-2">Empréstimos`;
+      const btn = `<button onclick="mvStartNewLoanForClient('${c.id}')" class="btn-gold w-full py-3 mb-4 flex items-center justify-center gap-2"><i data-lucide="plus" class="w-4 h-4"></i> Novo empréstimo para este cliente</button>`;
+      return html.includes(marker) ? html.replace(marker, btn + marker) : html + btn;
+    };
+
+    function mvCalcEarlyInstallmentDiscount(inst, paymentDate) {
+      const loan = DB.getLoanByKey(inst?.loan_id_inst);
+      if (!loan || Finance.isProportionalLoan(loan)) return { days:0, discount:0, interestPending:0, principal:0 };
+      const due = inst.due_date || '';
+      if (!paymentDate || !due) return { days:0, discount:0, interestPending:0, principal:0 };
+      const days = Math.max(0, Utils.daysDiff(due, paymentDate));
+      if (days <= 0) return { days:0, discount:0, interestPending:0, principal:0 };
+      const det = Finance.calcInstallmentDetails(inst, paymentDate);
+      const dailyRate = Number(loan.daily_rate_used ?? loan.late_daily_rate ?? 0);
+      const raw = Number(det.principal || 0) * (dailyRate / 100) * days;
+      const discount = mvRoundMoney(Math.min(Number(det.periodInterestPending || 0), Math.max(0, raw)));
+      return { days, discount, interestPending: mvRoundMoney(det.periodInterestPending || 0), principal: mvRoundMoney(det.principal || 0), dailyRate };
+    }
+    window.mvCalcEarlyInstallmentDiscount = mvCalcEarlyInstallmentDiscount;
+
+    function mvRenderEarlyDiscountPreview(mode) {
+      const inst = activeModal?.instId ? DB.getInstallmentById(activeModal.instId) : activeModal?.inst;
+      const modal = document.querySelector('#payment-modal .modal-content');
+      if (!modal || !inst) return;
+      let box = document.getElementById('mv-early-discount-preview');
+      if (!box) {
+        box = document.createElement('div');
+        box.id = 'mv-early-discount-preview';
+        box.className = 'card p-3 mb-3 border-emerald-500/20 bg-emerald-500/5 text-xs';
+        const total = document.getElementById('pay-total-money')?.closest('.card') || document.getElementById('pay-avulso-card') || document.getElementById('pay-principal-card');
+        if (total && total.parentNode) total.parentNode.insertBefore(box, total);
+        else modal.appendChild(box);
+      }
+      const payDate = document.getElementById('pay-date')?.value || Utils.today();
+      const workingInst = { ...inst, due_date: mvGetPaymentCurrentDue(inst) };
+      const info = mvCalcEarlyInstallmentDiscount(workingInst, payDate);
+      if (!info.discount || !(mode === 'integral' || mode === 'juros')) {
+        box.style.display = 'none';
+        return;
+      }
+      box.style.display = 'block';
+      box.innerHTML = `<p class="font-semibold text-emerald-300 mb-1">Desconto por pagamento antecipado</p><p>Pagamento ${info.days} dia(s) antes do vencimento. Desconto calculado pela taxa diária do empréstimo: <b>${Number(info.dailyRate || 0).toFixed(4)}%</b>.</p><p class="mt-1">Desconto aplicado somente nos juros da parcela: <b class="text-emerald-300">${Utils.fmtMoney(info.discount)}</b>. O principal não é reduzido.</p>`;
+    }
+
+    const mvSetPaymentModeV20Base = mvSetPaymentMode;
+    mvSetPaymentMode = function(mode) {
+      mvSetPaymentModeV20Base(mode);
+      const type = document.getElementById('pay-type')?.value || mode;
+      if (type === 'integral' || type === 'juros') {
+        const inst = activeModal?.instId ? DB.getInstallmentById(activeModal.instId) : activeModal?.inst;
+        const payDate = document.getElementById('pay-date')?.value || Utils.today();
+        if (inst) {
+          const workingInst = { ...inst, due_date: mvGetPaymentCurrentDue(inst) };
+          const info = mvCalcEarlyInstallmentDiscount(workingInst, payDate);
+          if (info.discount > 0) {
+            const interestInput = document.getElementById('pay-interest-amount');
+            if (interestInput) {
+              const current = Number(interestInput.value || 0);
+              interestInput.value = mvRoundMoney(Math.max(0, current - info.discount)).toFixed(2);
+              mvUpdatePaymentTotal();
+            }
+          }
+        }
+      }
+      mvRenderEarlyDiscountPreview(type);
+    };
+
+    const CrudProcessPaymentV20Base = Crud.processPayment;
+    Crud.processPayment = function(e) {
+      const type = document.getElementById('pay-type')?.value || 'integral';
+      if (type !== 'avulso' && type !== 'antecipacao_parcelas' && type !== 'quitacao_contrato') {
+        const instId = activeModal?.instId || activeModal?.inst?.id;
+        const inst = instId ? DB.getInstallmentById(instId) : null;
+        const paymentDate = document.getElementById('pay-date')?.value || Utils.today();
+        const currentDue = inst ? mvGetPaymentCurrentDue(inst) : '';
+        if (inst && currentDue && currentDue !== inst.due_date) DB.updateInstallment(inst.id, { due_date: currentDue, due_date_manual_updated_at: new Date().toISOString() });
+        const freshInst = inst ? DB.getInstallmentById(inst.id) : null;
+        const info = freshInst ? mvCalcEarlyInstallmentDiscount(freshInst, paymentDate) : { discount:0 };
+        const data = mvPaymentInputs();
+        if (info.discount > 0 && (type === 'integral' || type === 'juros') && data.juros > 0) {
+          const oldInterest = Number(freshInst.interest || 0);
+          const newInterest = mvRoundMoney(Math.max(0, oldInterest - info.discount));
+          DB.updateInstallment(freshInst.id, {
+            original_interest_before_early_discount: Number(freshInst.original_interest_before_early_discount ?? oldInterest),
+            early_payment_discount_applied: mvRoundMoney(Number(freshInst.early_payment_discount_applied || 0) + info.discount),
+            early_payment_discount_last_date: paymentDate,
+            interest: newInterest,
+            installment_amount: mvRoundMoney(Number(freshInst.principal || 0) + newInterest)
+          });
+        }
+      }
+      return CrudProcessPaymentV20Base(e);
+    };
+
+
 </script>
 </body>
 </html>
