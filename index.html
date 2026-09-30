@@ -3343,7 +3343,39 @@ ${bizName}`;
       const loans = DB.getLoans();
       const allInst = DB.getInstallments();
       const payments = DB.getPayments();
-      const totalLent = loans.reduce((s,l) => s + Number(l.amount || 0), 0);
+      // Capital ainda exposto: empréstimos ativos menos principal efetivamente recebido.
+      // Valores de contratos já quitados não permanecem em 'Emprestado'.
+      const principalReceivedByLoan = payments.reduce((acc, p) => {
+        const id = p.loan_id_pay || p.loan_id || '';
+        if (!id) return acc;
+        acc[id] = (acc[id] || 0) + Number(p.paid_to_principal || p.paid_principal || 0);
+        return acc;
+      }, {});
+      // Capital em aberto: somente o principal que ainda não foi recuperado.
+      // O capital é separado pelo tipo do contrato e contratos quitados ficam em zero.
+      const openCapitalByLoan = (l) => {
+        // Regra da Saúde: contrato quitado nunca compõe capital em aberto.
+        if (String(l?.status_loan || '').toLowerCase() === 'quitado') return 0;
+
+        // Para contratos ativos, usa o principal realmente pendente reconstruído
+        // pelas parcelas/ciclo. Isso contempla pagamentos avulsos, integrais,
+        // antecipações e demais baixas registradas no próprio contrato.
+        const summary = mvGetLoanSummary(l, Utils.today());
+        const principalOpen = Number(summary?.principalOpen || 0);
+        if (principalOpen >= 0) return Math.max(0, principalOpen);
+
+        // Fallback defensivo para registros antigos sem parcelas consistentes.
+        const original = Number(l.amount || 0);
+        const principalReceived = Number(principalReceivedByLoan[l.id] || principalReceivedByLoan[l.loan_id] || 0);
+        return Math.max(0, original - principalReceived);
+      };
+      const openCapitalJurosCorridos = loans.reduce((s,l) => {
+        return s + (Finance.isProportionalLoan(l) ? openCapitalByLoan(l) : 0);
+      }, 0);
+      const openCapitalParcelado = loans.reduce((s,l) => {
+        return s + (!Finance.isProportionalLoan(l) ? openCapitalByLoan(l) : 0);
+      }, 0);
+      const totalLent = openCapitalJurosCorridos + openCapitalParcelado;
       // Recebido geral = soma real de todos os pagamentos recebidos registrados.
       const totalReceived = payments.reduce((s,p) => s + Number(p.payment_amount || 0), 0);
       const overdueInst = allInst.filter(i => i.status_inst !== 'pago' && Utils.daysDiff(Utils.today(), i.due_date) > 0);
@@ -3453,13 +3485,55 @@ ${bizName}`;
       // Recebido no intervalo = soma real dos pagamentos com data dentro do calendário escolhido.
       const intervalReceivedTotal = intervalPayments.reduce((s,p) => s + Number(p.payment_amount || 0), 0);
 
+      // Série diária para gestão: capital novo emprestado e lucro efetivamente recebido.
+      const dateRangeRows = [];
+      const cursor = new Date(selectedStart + 'T12:00:00');
+      const endCursor = new Date(selectedEnd + 'T12:00:00');
+      while (cursor <= endCursor) {
+        const d = cursor.toISOString().split('T')[0];
+        const lentDay = loans.filter(l => String(l.created_at || l.created_date || l.date || '').slice(0,10) === d)
+          .reduce((sum,l) => sum + Number(l.amount || 0), 0);
+        const profitDay = payments.filter(p => String(p.payment_date || '').slice(0,10) === d)
+          .reduce((sum,p) => sum + Number(p.paid_to_period_interest || 0) + Number(p.paid_to_extra_interest || 0) + Number(p.paid_to_penalty || 0), 0);
+        dateRangeRows.push({ date:d, label:Utils.fmtDate(d).slice(0,5), lent:lentDay, profit:profitDay });
+        cursor.setDate(cursor.getDate()+1);
+      }
+      const chartMax = Math.max(1, ...dateRangeRows.flatMap(r => [r.lent, r.profit]));
+      const chartRows = dateRangeRows.length > 90 ? dateRangeRows.filter((_,i) => i % Math.ceil(dateRangeRows.length/90) === 0) : dateRangeRows;
+      const chartHtml = chartRows.length ? `<div class="overflow-x-auto"><div class="flex items-end gap-1 min-w-[${Math.max(100, chartRows.length*18)}px] h-48 px-2">${chartRows.map(r => {
+        const hL = Math.max(2, Math.round((r.lent/chartMax)*150));
+        const hP = Math.max(2, Math.round((r.profit/chartMax)*150));
+        return `<div class="flex-1 min-w-[14px] h-full flex flex-col justify-end items-center gap-0.5" title="${r.label}: emprestado ${Utils.fmtMoney(r.lent)} | lucro recebido ${Utils.fmtMoney(r.profit)}"><div class="w-full bg-gold-500/70 rounded-t" style="height:${hL}px"></div><div class="w-full bg-green-500/70 rounded-t" style="height:${hP}px"></div><span class="text-[8px] text-slate-500 mt-1">${r.label}</span></div>`;
+      }).join('')}</div></div>` : '<p class="text-slate-500 text-sm">Sem dados no período.</p>';
+
       return `<div class="fade-in">
         <h2 class="text-lg font-semibold mb-4">Saúde Financeira</h2>
-        <div class="grid grid-cols-2 gap-3 mb-4">
-          <div class="stat-card"><div class="flex items-center gap-2 mb-1"><i data-lucide="trending-up" class="w-4 h-4 text-gold-400"></i><span class="text-xs text-slate-400">Emprestado</span></div><p class="text-lg font-bold text-gold-400">${Utils.fmtMoney(totalLent)}</p></div>
-          <div class="stat-card"><div class="flex items-center gap-2 mb-1"><i data-lucide="wallet" class="w-4 h-4 text-green-400"></i><span class="text-xs text-slate-400">Recebido</span></div><p class="text-lg font-bold text-green-400">${Utils.fmtMoney(totalReceived)}</p></div>
-          <div class="stat-card"><div class="flex items-center gap-2 mb-1"><i data-lucide="alert-circle" class="w-4 h-4 text-red-400"></i><span class="text-xs text-slate-400">Em Atraso</span></div><p class="text-lg font-bold text-red-400">${Utils.fmtMoney(totalOverdue)}</p><p class="text-xs text-slate-500">${overdueInst.length} parcelas</p></div>
-          <div class="stat-card"><div class="flex items-center gap-2 mb-1"><i data-lucide="bar-chart-3" class="w-4 h-4 ${profit>=0?'text-green-400':'text-red-400'}"></i><span class="text-xs text-slate-400">Resultado Bruto</span></div><p class="text-lg font-bold ${profit>=0?'text-green-400':'text-red-400'}">${Utils.fmtMoney(profit)}</p></div>
+        <div class="mb-4">
+          <div class="card p-4 border-gold-500/30 bg-gold-500/5 mb-3">
+            <div class="flex items-center justify-between gap-3">
+              <div><div class="flex items-center gap-2 mb-1"><i data-lucide="landmark" class="w-5 h-5 text-gold-400"></i><span class="text-xs text-slate-400">Capital total em aberto</span></div><p class="text-2xl font-bold text-gold-400">${Utils.fmtMoney(totalLent)}</p><p class="text-xs text-slate-500 mt-1">Somente o capital ainda não recuperado. Empréstimos quitados não entram.</p></div>
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div class="stat-card"><div class="flex items-center gap-2 mb-1"><i data-lucide="refresh-cw" class="w-4 h-4 text-blue-400"></i><span class="text-xs text-slate-400">Capital • Juros Corridos</span></div><p class="text-lg font-bold text-blue-400">${Utils.fmtMoney(openCapitalJurosCorridos)}</p><p class="text-xs text-slate-500 mt-1">Capital dos contratos de saldo corrido ainda abertos.</p></div>
+            <div class="stat-card"><div class="flex items-center gap-2 mb-1"><i data-lucide="calendar-clock" class="w-4 h-4 text-purple-400"></i><span class="text-xs text-slate-400">Capital • Parcelamento Fixo</span></div><p class="text-lg font-bold text-purple-400">${Utils.fmtMoney(openCapitalParcelado)}</p><p class="text-xs text-slate-500 mt-1">Principal ainda aberto nos contratos parcelados.</p></div>
+            <div class="stat-card"><div class="flex items-center gap-2 mb-1"><i data-lucide="wallet" class="w-4 h-4 text-green-400"></i><span class="text-xs text-slate-400">Recebido</span></div><p class="text-lg font-bold text-green-400">${Utils.fmtMoney(totalReceived)}</p></div>
+            <div class="stat-card"><div class="flex items-center gap-2 mb-1"><i data-lucide="alert-circle" class="w-4 h-4 text-red-400"></i><span class="text-xs text-slate-400">Em Atraso</span></div><p class="text-lg font-bold text-red-400">${Utils.fmtMoney(totalOverdue)}</p><p class="text-xs text-slate-500">${overdueInst.length} parcelas</p></div>
+            <div class="stat-card col-span-2"><div class="flex items-center gap-2 mb-1"><i data-lucide="bar-chart-3" class="w-4 h-4 ${profit>=0?'text-green-400':'text-red-400'}"></i><span class="text-xs text-slate-400">Resultado Bruto</span></div><p class="text-lg font-bold ${profit>=0?'text-green-400':'text-red-400'}">${Utils.fmtMoney(profit)}</p></div>
+          </div>
+        </div>
+
+        <div class="card p-4 mb-4">
+          <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+            <div><h3 class="font-semibold text-sm flex items-center gap-2"><i data-lucide="activity" class="w-4 h-4 text-gold-400"></i> Capital emprestado x lucro por período</h3><p class="text-xs text-slate-500">Emprestado = novos contratos no período. Lucro = juros e multas efetivamente recebidos.</p></div>
+            <div class="flex flex-wrap gap-2">
+              <button onclick="healthEndDate=Utils.today();healthStartDate=(()=>{const d=new Date(Utils.today()+'T12:00:00');d.setDate(d.getDate()-6);return d.toISOString().split('T')[0]})();render()" class="btn-outline py-1 px-2 text-xs">7 dias</button>
+              <button onclick="healthEndDate=Utils.today();healthStartDate=(()=>{const d=new Date(Utils.today()+'T12:00:00');d.setDate(d.getDate()-29);return d.toISOString().split('T')[0]})();render()" class="btn-outline py-1 px-2 text-xs">30 dias</button>
+              <button onclick="healthEndDate=Utils.today();healthStartDate=(()=>{const d=new Date(Utils.today()+'T12:00:00');d.setDate(d.getDate()-59);return d.toISOString().split('T')[0]})();render()" class="btn-outline py-1 px-2 text-xs">60 dias</button>
+            </div>
+          </div>
+          <div class="flex items-center gap-4 text-xs mb-3"><span class="text-gold-300">■ Capital emprestado</span><span class="text-green-300">■ Lucro recebido</span></div>
+          ${chartHtml}
         </div>
 
         <div class="card p-4 mb-4">
