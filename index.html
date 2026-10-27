@@ -3,7 +3,8 @@
 <head>    
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>MV Financeira - Sistema de Empréstimos</title>
+  <title>MV Financeira v24.1 - SAC e Cobranças Consolidadas</title>
+  <meta name="mv-version" content="24" />
   <script src="https://cdn.tailwindcss.com/3.4.17"></script>
   <script src="https://cdn.jsdelivr.net/npm/lucide@0.263.0/dist/umd/lucide.min.js"></script>
   <!-- Firebase compatível com HTML simples/GitHub Pages -->
@@ -809,7 +810,7 @@
       const client = DB.getClientById(loan.client_id);
       const pix = DB.getConfig('pix_key', 'Não configurado');
       const bizName = DB.getConfig('business_name', 'MV Financeira');
-      const calcLabel = Finance.isProportionalLoan(loan) ? 'Saldo corrido proporcional' : (loan.calculation_mode === 'parcela_fixa' ? 'Parcela fixa' : 'Tabela Price');
+      const calcLabel = Finance.isProportionalLoan(loan) ? 'Saldo corrido proporcional' : (loan.calculation_mode === 'parcela_fixa' ? 'Parcela fixa' : (loan.calculation_mode === 'sac' ? 'SAC' : 'Tabela Price'));
       if (installment) {
         const det = Finance.calcInstallmentDetails(installment, Utils.today());
         const verbo = det.daysLate > 0 ? 'venceu em' : 'vence em';
@@ -1462,9 +1463,11 @@ ${bizName}`;
 
         const n = Math.max(1, Number(loan.num_installments || installments.length || 1));
         const amount = Number(loan.amount || 0);
-        const calc = Finance.isFixedInstallmentLoan(loan)
-          ? Finance.calcFixedPaymentSchedule(amount, Number(loan.fixed_installment_value || 0), n)
-          : Finance.calcInstallmentAmount(amount, Number(loan.rate_used || 0), loan.frequency || 'mensal', n);
+        const calc = loan.calculation_mode === 'sac'
+          ? Finance.calcSACSchedule(amount, Number(loan.rate_used || 0), loan.frequency || 'mensal', n)
+          : (Finance.isFixedInstallmentLoan(loan)
+            ? Finance.calcFixedPaymentSchedule(amount, Number(loan.fixed_installment_value || 0), n)
+            : Finance.calcInstallmentAmount(amount, Number(loan.rate_used || 0), loan.frequency || 'mensal', n));
 
         const schedule = calc?.schedule || [];
 
@@ -1688,6 +1691,31 @@ ${bizName}`;
         });
         return state;
       },
+      calcSACSchedule: (amount, periodRate, frequency, numInstallments) => {
+        const n = Math.max(1, Math.trunc(Number(numInstallments || 1)));
+        const principalCents = Math.round(Number(amount || 0) * 100);
+        const r = Number(periodRate || 0) / 100;
+        const daysInPeriod = { diario:1, semanal:7, quinzenal:15, mensal:30 }[frequency] || 30;
+        if (!Number.isFinite(principalCents) || principalCents <= 0 || !Number.isFinite(r) || r < 0) return null;
+        const baseCents = Math.floor(principalCents / n);
+        let balance = principalCents;
+        const schedule = [];
+        for (let k = 1; k <= n; k++) {
+          const startBalance = balance;
+          const amortCents = k === n ? balance : baseCents;
+          const interestCents = Math.round(startBalance * r);
+          balance = Math.max(0, balance - amortCents);
+          schedule.push({
+            number:k, startBalance:startBalance/100, principal:amortCents/100,
+            interest:interestCents/100, installmentAmount:(amortCents+interestCents)/100,
+            endBalance:balance/100
+          });
+        }
+        const total = Finance.round2(schedule.reduce((sum, x) => sum + x.installmentAmount, 0));
+        return { basePrincipal:baseCents/100, periodInterest:schedule[0]?.interest || 0,
+          installmentAmount:schedule[0]?.installmentAmount || 0, daysInPeriod,
+          total, schedule, periodRate:Number(periodRate || 0) };
+      },
       calcInstallmentAmount: (amount, periodRate, frequency, numInstallments) => {
         const freqDays = { diario:1, semanal:7, quinzenal:15, mensal:30 };
         const daysInPeriod = freqDays[frequency] || 30;
@@ -1731,7 +1759,7 @@ ${bizName}`;
         const rate = Number(loan.rate_used || 0);
         const freq = loan.frequency || 'mensal';
         const firstDue = loan.first_due || loan.date || Utils.today();
-        const calc = Finance.calcInstallmentAmount(amount, rate, freq, instCount);
+        const calc = loan.calculation_mode === 'sac' ? Finance.calcSACSchedule(amount, rate, freq, instCount) : Finance.calcInstallmentAmount(amount, rate, freq, instCount);
         const dates = Finance.generateInstallmentDates(firstDue, freq, instCount);
         const installmentList = [];
         for (let i = 0; i < instCount; i++) {
@@ -2133,6 +2161,7 @@ ${bizName}`;
         const freq = document.getElementById('lf-freq').value;
         let inst = parseInt(document.getElementById('lf-inst').value, 10);
         const calculationMode = document.getElementById('lf-calc-mode')?.value || 'price';
+        if (isEdit && currentLoan && calculationMode === 'sac' && currentLoan.calculation_mode !== 'sac') return Utils.toast('SAC disponível somente para novos empréstimos. O contrato existente não será convertido.', 'error');
         const fixedInstallmentValue = parseFloat(document.getElementById('lf-fixed-payment')?.value || '0');
         const penaltyDailyRate = parseFloat(document.getElementById('lf-penalty-rate')?.value || DB.getConfig('default_penalty_daily_rate','1.00'));
         const loanDate = document.getElementById('lf-date').value || Utils.today();
@@ -2166,8 +2195,9 @@ ${bizName}`;
           rate = isNaN(manualPeriodRate) || manualPeriodRate < 0 ? rate : manualPeriodRate;
           dailyRate = multi > 0 ? rate / multi : rate;
           if (isNaN(rate) || rate < 0) return Utils.toast('Taxa do empréstimo inválida', 'error');
-          calc = Finance.calcInstallmentAmount(amount, rate, freq, inst);
+          calc = calculationMode === 'sac' ? Finance.calcSACSchedule(amount, rate, freq, inst) : Finance.calcInstallmentAmount(amount, rate, freq, inst);
         }
+        if (!calc || !Array.isArray(calc.schedule)) return Utils.toast('Não foi possível calcular as parcelas.', 'error');
         const loanId = currentLoan?.loan_id || Utils.uid();
 
         const loanData = {
@@ -2776,6 +2806,7 @@ ${bizName}`;
       const tabs = [
         { id:'clients', icon:'users', label:'Clientes' },
         { id:'loans', icon:'banknote', label:'Empréstimos' },
+        { id:'charges', icon:'message-circle', label:'Cobranças' },
         { id:'investors', icon:'trending-up', label:'Investidores' },
         { id:'delete-loans', icon:'trash-2', label:'Excluir' },
         { id:'health', icon:'heart-pulse', label:'Saúde' },
@@ -2786,6 +2817,7 @@ ${bizName}`;
       switch(adminTab) {
         case 'clients': content = renderClientsTab(); break;
         case 'loans': content = renderLoansTab(); break;
+        case 'charges': content = mvRenderChargeCenter(); break;
         case 'investors': content = renderInvestorsTab(); break;
         case 'delete-loans': content = renderDeleteLoansTab(); break;
         case 'health': content = renderHealthTab(); break;
@@ -2796,7 +2828,7 @@ ${bizName}`;
         <header class="mv-admin-header flex items-center justify-between px-3 sm:px-4 py-3 border-b border-gold-800/20">
           <div class="mv-brand-wrap flex items-center gap-2">
             <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-gold-500 to-gold-700 flex items-center justify-center shrink-0"><i data-lucide="landmark" class="w-5 h-5 text-navy-900"></i></div>
-            <span class="mv-brand-title heading-font text-lg gold-gradient">${title}</span>
+            <span class="mv-brand-title heading-font text-lg gold-gradient">${title} <span class="text-xs text-slate-400 font-normal">v24.1</span></span>
           </div>
           <button onclick="adminLoggedIn=false;adminTab='clients';Utils.clearStates();currentScreen='home';render()" class="mv-logout-btn text-slate-300 text-xs flex items-center gap-1"><i data-lucide="log-out" class="w-4 h-4"></i> <span>Sair</span></button>
         </header>
@@ -3099,7 +3131,7 @@ ${bizName}`;
         const summary = mvGetLoanSummary(l);
         const overdue = summary.overdueCount > 0;
         const client = DB.getClientById(l.client_id);
-        return `<div class="card ${compact ? '' : 'card-hover'} p-${compact ? '3' : '4'} mb-3 ${compact ? 'ml-0 sm:ml-6 border-gold-800/20' : ''} ${overdue ? 'border-red-500/40 bg-red-500/5' : ''}" onclick="viewingLoan='${l.id}';adminTab='loans';render()"><div class="flex items-center justify-between gap-3"><div class="min-w-0">${!compact ? `<p class="font-semibold truncate">${mvEscapeHtml(client?.name || 'Cliente')}</p>` : `<p class="text-xs text-slate-400">Empréstimo #${String(l.loan_id || '').slice(-5).toUpperCase()}</p>`}<p class="text-sm text-gold-400">${Utils.fmtMoney(l.amount)} • ${l.calculation_mode==='proporcional'?'Saldo corrido':(l.calculation_mode==='parcela_fixa'?'Parcela fixa':(l.num_installments+'x '+l.frequency))} • ${Number(l.rate_used||0).toFixed(2)}%</p><p class="text-xs ${overdue ? 'text-red-300 font-semibold' : 'text-slate-400'}">${overdue ? '⚠ ' + summary.overdueCount + ' parcela(s) em atraso • ' + Utils.fmtMoney(summary.overdueAmount) : 'Criado em ' + Utils.fmtDate(l.date)}</p><p class="text-xs text-slate-500">Valor devido: ${Utils.fmtMoney(summary.totalDue)} • Pendentes: ${summary.pendingCount}</p></div><span class="badge ${overdue ? 'badge-overdue' : l.status_loan==='ativo'?'badge-active':'badge-paid'} shrink-0">${overdue ? 'ATRASO' : l.status_loan}</span></div></div>`;
+        return `<div class="card ${compact ? '' : 'card-hover'} p-${compact ? '3' : '4'} mb-3 ${compact ? 'ml-0 sm:ml-6 border-gold-800/20' : ''} ${overdue ? 'border-red-500/40 bg-red-500/5' : ''}" onclick="viewingLoan='${l.id}';adminTab='loans';render()"><div class="flex items-center justify-between gap-3"><div class="min-w-0">${!compact ? `<p class="font-semibold truncate">${mvEscapeHtml(client?.name || 'Cliente')}</p>` : `<p class="text-xs text-slate-400">Empréstimo #${String(l.loan_id || '').slice(-5).toUpperCase()}</p>`}<p class="text-sm text-gold-400">${Utils.fmtMoney(l.amount)} • ${l.calculation_mode==='proporcional'?'Saldo corrido':(l.calculation_mode==='parcela_fixa'?'Parcela fixa':(l.calculation_mode==='sac'?'SAC • '+l.num_installments+'x '+l.frequency:(l.num_installments+'x '+l.frequency)))} • ${Number(l.rate_used||0).toFixed(2)}%</p><p class="text-xs ${overdue ? 'text-red-300 font-semibold' : 'text-slate-400'}">${overdue ? '⚠ ' + summary.overdueCount + ' parcela(s) em atraso • ' + Utils.fmtMoney(summary.overdueAmount) : 'Criado em ' + Utils.fmtDate(l.date)}</p><p class="text-xs text-slate-500">Valor devido: ${Utils.fmtMoney(summary.totalDue)} • Pendentes: ${summary.pendingCount}</p></div><span class="badge ${overdue ? 'badge-overdue' : l.status_loan==='ativo'?'badge-active':'badge-paid'} shrink-0">${overdue ? 'ATRASO' : l.status_loan}</span></div></div>`;
       };
       return `<div><div class="flex items-center justify-between mb-4 gap-3"><h2 class="text-lg font-semibold">Empréstimos <span class="text-slate-500 text-sm">(${filteredLoans.length}/${loans.length})</span></h2><button onclick="editingLoan={};render()" class="btn-gold py-2 px-4 text-sm flex items-center gap-1"><i data-lucide="plus" class="w-4 h-4"></i> Novo</button></div><div class="card mv-search-card mb-4"><label class="text-xs text-slate-400 mb-2 block">Buscar empréstimo</label><div class="mv-search-inner"><span class="mv-search-icon">⌕</span><input class="mv-search-input input-field" value="${safeSearch}" placeholder="Cliente, CPF, código, valor ou atraso" oninput="loanSearchQuery=this.value;mvDebouncedRender('loans',220)" autocomplete="off">${loanSearchQuery ? `<button onclick="loanSearchQuery='';render()" class="btn-outline text-xs py-1 px-2">Limpar</button>` : ''}</div></div>${loans.length === 0 ? '<p class="text-slate-500 text-center py-8">Nenhum empréstimo</p>' : filteredLoans.length === 0 ? '<p class="text-slate-500 text-center py-8">Nenhum empréstimo encontrado.</p>' : clientGroups.map(group => { const open = !!expandedLoanFolders[group.clientId] || loanSearchQuery; return `<div class="card p-4 mb-3 ${group.overdueCount > 0 ? 'border-red-500/40 bg-red-500/5' : ''}"><div class="flex items-center justify-between gap-3 cursor-pointer" onclick="expandedLoanFolders['${group.clientId}'] = !expandedLoanFolders['${group.clientId}']; render()"><div class="flex items-center gap-3 min-w-0"><div class="w-10 h-10 rounded-xl ${group.overdueCount > 0 ? 'bg-red-500/15 border border-red-500/30' : 'bg-gold-500/15 border border-gold-500/25'} flex items-center justify-center shrink-0"><i data-lucide="${open ? 'folder-open' : 'folder'}" class="w-5 h-5 ${group.overdueCount > 0 ? 'text-red-300' : 'text-gold-400'}"></i></div><div class="min-w-0"><p class="font-semibold truncate">${mvEscapeHtml(group.client?.name || 'Cliente sem cadastro')}</p><p class="text-xs ${group.overdueCount > 0 ? 'text-red-300 font-semibold' : 'text-slate-400'}">${group.clientLoans.length} empréstimos • ${group.activeCount} ativos • ${group.paidCount} quitados${group.overdueCount > 0 ? ' • ' + group.overdueCount + ' atraso(s)' : ''}</p><p class="text-sm text-gold-400">Emprestado: ${Utils.fmtMoney(group.totalAmount)} • Devido: ${Utils.fmtMoney(group.totalDue)}</p></div></div><div class="flex items-center gap-2 shrink-0"><span class="badge ${group.overdueCount > 0 ? 'badge-overdue' : group.activeCount > 0 ? 'badge-active' : 'badge-paid'}">${group.overdueCount > 0 ? 'ATRASO' : group.activeCount > 0 ? 'ativo' : 'quitado'}</span><i data-lucide="${open ? 'chevron-up' : 'chevron-down'}" class="w-4 h-4 text-slate-400"></i></div></div>${open ? `<div class="mt-4 pt-3 border-t border-gold-800/20">${group.clientLoans.map(l => renderLoanCard(l, true)).join('')}</div>` : ''}</div>`; }).join('')}</div>`;
     }
@@ -3113,7 +3145,7 @@ ${bizName}`;
           <div class="flex items-center justify-between gap-3">
             <div class="flex-1">
               <p class="font-semibold">${DB.getClientById(l.client_id)?.name || 'Cliente'}</p>
-              <p class="text-sm text-gold-400">${Utils.fmtMoney(l.amount)} • ${l.calculation_mode==='proporcional'?'Saldo corrido':(l.calculation_mode==='parcela_fixa'?'Parcela fixa':(l.num_installments+'x '+l.frequency))} • ${Number(l.rate_used||0).toFixed(2)}%</p>
+              <p class="text-sm text-gold-400">${Utils.fmtMoney(l.amount)} • ${l.calculation_mode==='proporcional'?'Saldo corrido':(l.calculation_mode==='parcela_fixa'?'Parcela fixa':(l.calculation_mode==='sac'?'SAC • '+l.num_installments+'x '+l.frequency:(l.num_installments+'x '+l.frequency)))} • ${Number(l.rate_used||0).toFixed(2)}%</p>
               <p class="text-xs text-slate-400">${Utils.fmtDate(l.date)}</p>
             </div>
             <button onclick="confirmAction={type:'deleteLoan',id:'${l.id}',loanKey:'${l.loan_id}',clientName:'${DB.getClientById(l.client_id)?.name || 'Cliente'}',amount:'${Utils.fmtMoney(l.amount)}'};render()" class="btn-danger py-2 px-3 text-sm flex items-center gap-1"><i data-lucide="trash-2" class="w-4 h-4"></i> Excluir</button>
@@ -3227,13 +3259,24 @@ ${bizName}`;
                 preview.innerHTML = '<b>Parcela Fixa / cálculo vice-versa:</b><br>Parcela definida: <b class="text-gold-400">' + Utils.fmtMoney(fixedPayment) + '</b><br>Taxa equivalente no prazo: <b class="text-gold-400">' + Number(fixedCalc.periodRate || 0).toFixed(2) + '%</b> (~' + impliedDaily.toFixed(4) + '% ao dia)<br>1ª parcela: juros ' + Utils.fmtMoney(first.interest) + ' + amortização ' + Utils.fmtMoney(first.principal) + '<br>Total das parcelas: ' + Utils.fmtMoney(fixedCalc.total) + ' | Juros total: ' + Utils.fmtMoney(fixedCalc.total - amount);
               }
             }
+          } else if (calcMode === 'sac') {
+            const calc = Finance.calcSACSchedule(amount, periodRate, freq, n);
+            if (calc) {
+              const first = calc.schedule[0];
+              const last = calc.schedule[calc.schedule.length-1];
+              preview.innerHTML = '<b>SAC — Amortização Constante:</b><br>' +
+                'Amortização do capital: <b class="text-gold-400">' + Utils.fmtMoney(first.principal) + '</b> por parcela (ajuste de centavos na última).<br>' +
+                '1ª parcela: <b>' + Utils.fmtMoney(first.installmentAmount) + '</b> (juros ' + Utils.fmtMoney(first.interest) + ').<br>' +
+                'Última parcela: <b>' + Utils.fmtMoney(last.installmentAmount) + '</b> (juros ' + Utils.fmtMoney(last.interest) + ').<br>' +
+                'Total das ' + n + ' parcelas: <b>' + Utils.fmtMoney(calc.total) + '</b> | Juros: ' + Utils.fmtMoney(calc.total - amount);
+            } else preview.textContent = 'Informe os valores para simular SAC.';
           } else {
             const calc = Finance.calcInstallmentAmount(amount, periodRate, freq, n);
             const first = calc.schedule[0];
             preview.innerHTML = '<b>Simulação Price:</b><br>Parcela fixa: <b class="text-gold-400">' + Utils.fmtMoney(calc.installmentAmount) + '</b><br>1ª parcela: juros ' + Utils.fmtMoney(first.interest) + ' + amortização ' + Utils.fmtMoney(first.principal) + '<br>Total estimado: ' + Utils.fmtMoney(calc.total);
           }
         } else {
-          preview.textContent = calcMode === 'proporcional' ? 'Informe o valor para ver a simulação proporcional.' : calcMode === 'parcela_fixa' ? 'Informe valor, quantidade de parcelas e valor da parcela fixa.' : 'Informe valor e número de parcelas para ver a simulação Price.';
+          preview.textContent = calcMode === 'proporcional' ? 'Informe o valor para ver a simulação proporcional.' : calcMode === 'parcela_fixa' ? 'Informe valor, quantidade de parcelas e valor da parcela fixa.' : (calcMode === 'sac' ? 'Informe valor e número de parcelas para ver a simulação SAC.' : 'Informe valor e número de parcelas para ver a simulação Price.');
         }
       }
     }
@@ -3798,7 +3841,7 @@ ${bizName}`;
       if (loans.length && (!clientPortalSelectedLoan || !loans.some(l => l.loan_id === clientPortalSelectedLoan))) clientPortalSelectedLoan = summaries.find(x => x.summary.pendingCount > 0)?.loan.loan_id || loans[0].loan_id;
       const selectedPair = summaries.find(x => x.loan.loan_id === clientPortalSelectedLoan) || summaries[0];
       const loanSelector = summaries.length > 1 ? `<div class="card p-3 mb-4"><p class="text-xs text-slate-400 mb-2">Navegue pelos empréstimos</p><div class="flex gap-2 overflow-x-auto pb-1">${summaries.map(({loan, summary}) => { const active = loan.loan_id === clientPortalSelectedLoan; const overdue = summary.overdueCount > 0; return `<button onclick="clientPortalSelectedLoan='${loan.loan_id}';render()" class="${active ? 'btn-gold' : 'btn-outline'} py-2 px-3 text-xs shrink-0 ${overdue && !active ? 'border-red-500/50 text-red-300' : ''}">#${String(loan.loan_id || '').slice(-4).toUpperCase()} • ${Utils.fmtMoney(summary.totalDue)}${overdue ? ' • ATRASO' : ''}</button>`; }).join('')}</div></div>` : '';
-      const selectedCard = selectedPair ? (() => { const loan = selectedPair.loan; const summary = selectedPair.summary; const overdueLoan = summary.overdueCount > 0; return `<div class="card p-4 mb-4 ${overdueLoan ? 'border-red-500/40 bg-red-500/5' : ''}"><div class="flex justify-between items-start gap-3 mb-3"><div><p class="text-xs text-slate-400">Empréstimo selecionado #${String(loan.loan_id || '').slice(-5).toUpperCase()}</p><p class="font-semibold text-gold-400">${Utils.fmtMoney(loan.amount)}</p><p class="text-xs ${overdueLoan ? 'text-red-300 font-semibold' : 'text-slate-400'}">${loan.calculation_mode==='proporcional'?'Saldo corrido':(loan.calculation_mode==='parcela_fixa'?'Parcela fixa':(loan.num_installments+'x '+loan.frequency))}${overdueLoan ? ' • ' + summary.overdueCount + ' parcela(s) em atraso' : ''}</p></div><span class="badge ${overdueLoan ? 'badge-overdue' : loan.status_loan==='ativo'?'badge-active':'badge-paid'}">${overdueLoan ? 'ATRASO' : loan.status_loan}</span></div><div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center mb-3"><div class="stat-card"><p class="text-xs text-slate-400">Valor Devido</p><p class="text-sm font-bold text-red-400">${Utils.fmtMoney(summary.totalDue)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Principal</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(summary.principalOpen)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Juros</p><p class="text-sm font-bold text-yellow-400">${Utils.fmtMoney(summary.interestOpen)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Multa</p><p class="text-sm font-bold text-red-300">${Utils.fmtMoney(summary.penaltyOpen)}</p></div></div><h4 class="text-sm font-semibold mb-2">Parcelas deste empréstimo</h4>${summary.installments.map(inst => { const det = Finance.calcInstallmentDetails(inst); const isPaid = inst.status_inst === 'pago'; const isOverdue = !isPaid && det.daysLate > 0; return `<div class="flex justify-between items-center py-3 border-b border-gold-800/10 text-sm gap-3 ${isOverdue ? 'bg-red-500/5 rounded-lg px-2 border border-red-500/20 mb-2' : ''}"><div><p class="font-medium">#${inst.number} - ${Utils.fmtMoney(det.totalDue)}</p><p class="text-xs ${isOverdue ? 'text-red-300 font-semibold' : 'text-slate-400'}">Venc: ${Utils.fmtDate(inst.due_date)} ${isOverdue?'('+det.daysLate+'d atraso)':''}</p><p class="text-xs text-slate-500">Principal pendente: ${Utils.fmtMoney(det.principal)} • Juros: ${Utils.fmtMoney(det.totalInterestPending)}</p>${!isPaid && det.accumulatedPenalty > 0 ? `<p class="text-xs text-red-300">Multa: ${Utils.fmtMoney(det.accumulatedPenalty)}</p>` : ''}${Number(inst.total_penalty_discount || 0) > 0 ? `<p class="text-xs text-emerald-300">Desconto na multa: ${Utils.fmtMoney(inst.total_penalty_discount)}</p>` : ''}</div><div class="flex flex-col items-end gap-2"><span class="badge ${isPaid?'badge-paid':isOverdue?'badge-overdue':'badge-pending'}">${isPaid?'Pago':isOverdue?'Atraso':'Pendente'}</span>${!isPaid ? `<button type="button" onclick="navigator.clipboard.writeText('${mvEscapeJs(pix)}');Utils.toast('PIX copiado! Faça o pagamento e envie o comprovante.');" class="btn-gold py-1 px-3 text-xs whitespace-nowrap">Pagar PIX</button>` : ''}</div></div>`; }).join('')}</div>`; })() : '<p class="text-slate-500 text-center">Nenhum empréstimo</p>';
+      const selectedCard = selectedPair ? (() => { const loan = selectedPair.loan; const summary = selectedPair.summary; const overdueLoan = summary.overdueCount > 0; return `<div class="card p-4 mb-4 ${overdueLoan ? 'border-red-500/40 bg-red-500/5' : ''}"><div class="flex justify-between items-start gap-3 mb-3"><div><p class="text-xs text-slate-400">Empréstimo selecionado #${String(loan.loan_id || '').slice(-5).toUpperCase()}</p><p class="font-semibold text-gold-400">${Utils.fmtMoney(loan.amount)}</p><p class="text-xs ${overdueLoan ? 'text-red-300 font-semibold' : 'text-slate-400'}">${loan.calculation_mode==='proporcional'?'Saldo corrido':(loan.calculation_mode==='parcela_fixa'?'Parcela fixa':(loan.calculation_mode==='sac'?'SAC • '+loan.num_installments+'x '+loan.frequency:(loan.num_installments+'x '+loan.frequency)))}${overdueLoan ? ' • ' + summary.overdueCount + ' parcela(s) em atraso' : ''}</p></div><span class="badge ${overdueLoan ? 'badge-overdue' : loan.status_loan==='ativo'?'badge-active':'badge-paid'}">${overdueLoan ? 'ATRASO' : loan.status_loan}</span></div><div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center mb-3"><div class="stat-card"><p class="text-xs text-slate-400">Valor Devido</p><p class="text-sm font-bold text-red-400">${Utils.fmtMoney(summary.totalDue)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Principal</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(summary.principalOpen)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Juros</p><p class="text-sm font-bold text-yellow-400">${Utils.fmtMoney(summary.interestOpen)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Multa</p><p class="text-sm font-bold text-red-300">${Utils.fmtMoney(summary.penaltyOpen)}</p></div></div><h4 class="text-sm font-semibold mb-2">Parcelas deste empréstimo</h4>${summary.installments.map(inst => { const det = Finance.calcInstallmentDetails(inst); const isPaid = inst.status_inst === 'pago'; const isOverdue = !isPaid && det.daysLate > 0; return `<div class="flex justify-between items-center py-3 border-b border-gold-800/10 text-sm gap-3 ${isOverdue ? 'bg-red-500/5 rounded-lg px-2 border border-red-500/20 mb-2' : ''}"><div><p class="font-medium">#${inst.number} - ${Utils.fmtMoney(det.totalDue)}</p><p class="text-xs ${isOverdue ? 'text-red-300 font-semibold' : 'text-slate-400'}">Venc: ${Utils.fmtDate(inst.due_date)} ${isOverdue?'('+det.daysLate+'d atraso)':''}</p><p class="text-xs text-slate-500">Principal pendente: ${Utils.fmtMoney(det.principal)} • Juros: ${Utils.fmtMoney(det.totalInterestPending)}</p>${!isPaid && det.accumulatedPenalty > 0 ? `<p class="text-xs text-red-300">Multa: ${Utils.fmtMoney(det.accumulatedPenalty)}</p>` : ''}${Number(inst.total_penalty_discount || 0) > 0 ? `<p class="text-xs text-emerald-300">Desconto na multa: ${Utils.fmtMoney(inst.total_penalty_discount)}</p>` : ''}</div><div class="flex flex-col items-end gap-2"><span class="badge ${isPaid?'badge-paid':isOverdue?'badge-overdue':'badge-pending'}">${isPaid?'Pago':isOverdue?'Atraso':'Pendente'}</span>${!isPaid ? `<button type="button" onclick="navigator.clipboard.writeText('${mvEscapeJs(pix)}');Utils.toast('PIX copiado! Faça o pagamento e envie o comprovante.');" class="btn-gold py-1 px-3 text-xs whitespace-nowrap">Pagar PIX</button>` : ''}</div></div>`; }).join('')}</div>`; })() : '<p class="text-slate-500 text-center">Nenhum empréstimo</p>';
       return `<div class="flex flex-col h-full w-full fade-in"><header class="flex items-center justify-between px-4 py-3 border-b border-gold-800/20"><div class="flex items-center gap-2 min-w-0"><div class="w-8 h-8 rounded-lg bg-gradient-to-br from-gold-500 to-gold-700 flex items-center justify-center shrink-0"><i data-lucide="user" class="w-4 h-4 text-navy-900"></i></div><div class="min-w-0"><p class="text-sm font-semibold truncate">${mvEscapeHtml(client.name)}</p><p class="text-xs text-slate-400">${mvEscapeHtml(client.cpf)}</p></div></div><button onclick="clientLoggedIn=null;Utils.clearStates();currentScreen='home';render()" class="text-slate-400 text-xs flex items-center gap-1"><i data-lucide="log-out" class="w-4 h-4"></i></button></header><div class="flex-1 overflow-auto p-4"><div class="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4"><div class="stat-card text-center"><p class="text-xs text-slate-400">Valor Devido</p><p class="text-sm font-bold text-red-400">${Utils.fmtMoney(totalDebt)}</p></div><div class="stat-card text-center"><p class="text-xs text-slate-400">Principal Aberto</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(totalPrincipalOpen)}</p></div><div class="stat-card text-center"><p class="text-xs text-slate-400">Juros Aberto</p><p class="text-sm font-bold text-yellow-400">${Utils.fmtMoney(totalInterestOpen)}</p></div><div class="stat-card text-center"><p class="text-xs text-slate-400">Multa Aberta</p><p class="text-sm font-bold text-red-300">${Utils.fmtMoney(totalPenaltyOpen)}</p></div><div class="stat-card text-center"><p class="text-xs text-slate-400">Total Pago</p><p class="text-sm font-bold text-green-400">${Utils.fmtMoney(totalPaidAll)}</p></div><div class="stat-card text-center ${overdueCount > 0 ? 'border-red-500/40 bg-red-500/5' : ''}"><p class="text-xs text-slate-400">Atraso</p><p class="text-sm font-bold ${overdueCount > 0 ? 'text-red-300' : 'text-yellow-400'}">${overdueCount}</p></div></div><div class="card p-3 mb-4 flex items-center gap-2"><i data-lucide="qr-code" class="w-5 h-5 text-gold-400"></i><div class="flex-1 min-w-0"><p class="text-xs text-slate-400">PIX</p><p class="text-sm font-medium break-all">${mvEscapeHtml(pix)}</p></div><button onclick="navigator.clipboard.writeText('${mvEscapeJs(pix)}');Utils.toast('PIX copiado!')" class="btn-outline py-1 px-2 text-xs">Copiar</button></div>${loanSelector}${selectedCard}</div></div>`;
     }
     function showPaymentModal() {
@@ -4448,7 +4491,7 @@ ${bizName}`;
       const pix = DB.getConfig('pix_key', 'Não configurado');
       const bizName = DB.getConfig('business_name', 'MV Financeira');
       const isProportional = Finance.isProportionalLoan(loan);
-      const calcLabel = isProportional ? 'Saldo corrido proporcional' : (loan.calculation_mode === 'parcela_fixa' ? 'Parcela fixa' : 'Tabela Price');
+      const calcLabel = isProportional ? 'Saldo corrido proporcional' : (loan.calculation_mode === 'parcela_fixa' ? 'Parcela fixa' : (loan.calculation_mode === 'sac' ? 'SAC' : 'Tabela Price'));
       if (installment) {
         const det = Finance.calcInstallmentDetails(installment, Utils.today());
         if (!isProportional) {
@@ -4560,7 +4603,7 @@ ${bizName}`;
       });
       const n = Math.max(1, Number(loan.num_installments || installments.length || 1));
       const amount = Number(loan.amount || 0);
-      const calc = Finance.isFixedInstallmentLoan(loan) ? Finance.calcFixedPaymentSchedule(amount, Number(loan.fixed_installment_value || 0), n) : Finance.calcInstallmentAmount(amount, Number(loan.rate_used || 0), loan.frequency || 'mensal', n);
+      const calc = loan.calculation_mode === 'sac' ? Finance.calcSACSchedule(amount, Number(loan.rate_used || 0), loan.frequency || 'mensal', n) : (Finance.isFixedInstallmentLoan(loan) ? Finance.calcFixedPaymentSchedule(amount, Number(loan.fixed_installment_value || 0), n) : Finance.calcInstallmentAmount(amount, Number(loan.rate_used || 0), loan.frequency || 'mensal', n));
       const schedule = calc?.schedule || [];
       installments.forEach(inst => {
         const row = schedule[Number(inst.number || 1) - 1] || {};
@@ -5563,7 +5606,7 @@ ${bizName}`;
         const overdueLoan = summary.overdueCount > 0;
         const proportionalCard = Finance.isProportionalLoan(loan) && summary.nextPending ? mvRenderSaldoCorridoProjectionCard(loan, summary.nextPending) : '';
         return `<div class="card p-4 mb-4 ${overdueLoan ? 'border-red-500/40 bg-red-500/5' : ''}">
-          <div class="flex justify-between items-start gap-3 mb-3"><div><p class="text-xs text-slate-400">Empréstimo selecionado #${String(loan.loan_id || '').slice(-5).toUpperCase()}</p><p class="font-semibold text-gold-400">${Utils.fmtMoney(loan.amount)}</p><p class="text-xs ${overdueLoan ? 'text-red-300 font-semibold' : 'text-slate-400'}">${loan.calculation_mode==='proporcional'?'Saldo corrido':(loan.calculation_mode==='parcela_fixa'?'Parcela fixa':(loan.num_installments+'x '+loan.frequency))}${overdueLoan ? ' • ' + summary.overdueCount + ' parcela(s) em atraso' : ''}</p></div><span class="badge ${overdueLoan ? 'badge-overdue' : loan.status_loan==='ativo'?'badge-active':'badge-paid'}">${overdueLoan ? 'ATRASO' : loan.status_loan}</span></div>
+          <div class="flex justify-between items-start gap-3 mb-3"><div><p class="text-xs text-slate-400">Empréstimo selecionado #${String(loan.loan_id || '').slice(-5).toUpperCase()}</p><p class="font-semibold text-gold-400">${Utils.fmtMoney(loan.amount)}</p><p class="text-xs ${overdueLoan ? 'text-red-300 font-semibold' : 'text-slate-400'}">${loan.calculation_mode==='proporcional'?'Saldo corrido':(loan.calculation_mode==='parcela_fixa'?'Parcela fixa':(loan.calculation_mode==='sac'?'SAC • '+loan.num_installments+'x '+loan.frequency:(loan.num_installments+'x '+loan.frequency)))}${overdueLoan ? ' • ' + summary.overdueCount + ' parcela(s) em atraso' : ''}</p></div><span class="badge ${overdueLoan ? 'badge-overdue' : loan.status_loan==='ativo'?'badge-active':'badge-paid'}">${overdueLoan ? 'ATRASO' : loan.status_loan}</span></div>
           ${proportionalCard}
           <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center mb-3"><div class="stat-card"><p class="text-xs text-slate-400">Valor Devido</p><p class="text-sm font-bold text-red-400">${Utils.fmtMoney(summary.totalDue)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Principal</p><p class="text-sm font-bold text-gold-400">${Utils.fmtMoney(summary.principalOpen)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Juros</p><p class="text-sm font-bold text-yellow-400">${Utils.fmtMoney(summary.interestOpen)}</p></div><div class="stat-card"><p class="text-xs text-slate-400">Multa</p><p class="text-sm font-bold text-red-300">${Utils.fmtMoney(summary.penaltyOpen)}</p></div></div>
           <h4 class="text-sm font-semibold mb-2">${Finance.isProportionalLoan(loan) ? 'Ciclo do saldo corrido' : 'Parcelas deste empréstimo'}</h4>
@@ -5873,6 +5916,7 @@ ${bizName}`;
               <option value="price" ${(l.calculation_mode||'price')==='price'?'selected':''}>Tabela Price - parcelas fixas</option>
               <option value="parcela_fixa" ${l.calculation_mode==='parcela_fixa'?'selected':''}>Parcela Fixa - calcular juros pelo valor da parcela</option>
               <option value="proporcional" ${l.calculation_mode==='proporcional'?'selected':''}>Saldo corrido proporcional</option>
+              ${(!isEdit || l.calculation_mode === 'sac') ? `<option value="sac" ${l.calculation_mode==='sac'?'selected':''}>SAC - amortização constante (parcelas decrescentes)</option>` : ''}
             </select>
           </div>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -5919,7 +5963,7 @@ ${bizName}`;
         const summary = mvGetLoanSummary(l);
         const overdue = summary.overdueCount > 0;
         const client = DB.getClientById(l.client_id);
-        return `<div class="card ${compact ? '' : 'card-hover'} p-${compact ? '3' : '4'} mb-3 ${compact ? 'ml-0 sm:ml-6 border-gold-800/20' : ''} ${overdue ? 'border-red-500/40 bg-red-500/5' : ''}" onclick="viewingLoan='${l.id}';adminTab='loans';render()"><div class="flex items-center justify-between gap-3"><div class="min-w-0">${!compact ? `<p class="font-semibold truncate">${mvEscapeHtml(client?.name || 'Cliente')}</p>` : `<p class="text-xs text-slate-400">Empréstimo #${String(l.loan_id || '').slice(-5).toUpperCase()}</p>`}<p class="text-sm text-gold-400">${Utils.fmtMoney(l.amount)} • ${l.calculation_mode==='proporcional'?'Saldo corrido':(l.calculation_mode==='parcela_fixa'?'Parcela fixa':(l.num_installments+'x '+l.frequency))} • ${Number(l.rate_used||0).toFixed(2)}%</p><p class="text-xs ${overdue ? 'text-red-300 font-semibold' : 'text-slate-400'}">${overdue ? '⚠ ' + summary.overdueCount + ' parcela(s) em atraso • ' + Utils.fmtMoney(summary.overdueAmount) : 'Criado em ' + Utils.fmtDate(l.date)}</p><p class="text-xs text-slate-500">Valor devido: ${Utils.fmtMoney(summary.totalDue)} • Pendentes: ${summary.pendingCount}</p></div><span class="badge ${overdue ? 'badge-overdue' : l.status_loan==='ativo'?'badge-active':'badge-paid'} shrink-0">${overdue ? 'ATRASO' : l.status_loan}</span></div></div>`;
+        return `<div class="card ${compact ? '' : 'card-hover'} p-${compact ? '3' : '4'} mb-3 ${compact ? 'ml-0 sm:ml-6 border-gold-800/20' : ''} ${overdue ? 'border-red-500/40 bg-red-500/5' : ''}" onclick="viewingLoan='${l.id}';adminTab='loans';render()"><div class="flex items-center justify-between gap-3"><div class="min-w-0">${!compact ? `<p class="font-semibold truncate">${mvEscapeHtml(client?.name || 'Cliente')}</p>` : `<p class="text-xs text-slate-400">Empréstimo #${String(l.loan_id || '').slice(-5).toUpperCase()}</p>`}<p class="text-sm text-gold-400">${Utils.fmtMoney(l.amount)} • ${l.calculation_mode==='proporcional'?'Saldo corrido':(l.calculation_mode==='parcela_fixa'?'Parcela fixa':(l.calculation_mode==='sac'?'SAC • '+l.num_installments+'x '+l.frequency:(l.num_installments+'x '+l.frequency)))} • ${Number(l.rate_used||0).toFixed(2)}%</p><p class="text-xs ${overdue ? 'text-red-300 font-semibold' : 'text-slate-400'}">${overdue ? '⚠ ' + summary.overdueCount + ' parcela(s) em atraso • ' + Utils.fmtMoney(summary.overdueAmount) : 'Criado em ' + Utils.fmtDate(l.date)}</p><p class="text-xs text-slate-500">Valor devido: ${Utils.fmtMoney(summary.totalDue)} • Pendentes: ${summary.pendingCount}</p></div><span class="badge ${overdue ? 'badge-overdue' : l.status_loan==='ativo'?'badge-active':'badge-paid'} shrink-0">${overdue ? 'ATRASO' : l.status_loan}</span></div></div>`;
       };
       return `<div><div class="flex items-center justify-between mb-4 gap-3"><h2 class="text-lg font-semibold">Empréstimos <span class="text-slate-500 text-sm">(${filteredLoans.length}/${loans.length})</span></h2><button onclick="editingLoan={};loanClientSearchQuery='';render()" class="btn-gold py-2 px-4 text-sm flex items-center gap-1"><i data-lucide="plus" class="w-4 h-4"></i> Novo</button></div><div class="card mv-search-card mb-4"><label class="text-xs text-slate-400 mb-2 block">Buscar empréstimo</label><div class="mv-search-inner"><span class="mv-search-icon">⌕</span><input class="mv-search-input input-field" value="${safeSearch}" placeholder="Cliente, CPF, código, valor ou atraso" oninput="loanSearchQuery=this.value;mvDebouncedRender('loans',220)" autocomplete="off">${loanSearchQuery ? `<button onclick="loanSearchQuery='';render()" class="btn-outline text-xs py-1 px-2">Limpar</button>` : ''}</div></div>${loans.length === 0 ? '<p class="text-slate-500 text-center py-8">Nenhum empréstimo</p>' : filteredLoans.length === 0 ? '<p class="text-slate-500 text-center py-8">Nenhum empréstimo encontrado.</p>' : clientGroups.map(group => { const open = !!expandedLoanFolders[group.clientId] || loanSearchQuery; return `<div class="card p-4 mb-3 ${group.overdueCount > 0 ? 'border-red-500/40 bg-red-500/5' : ''}"><div class="flex items-center justify-between gap-3 cursor-pointer" onclick="expandedLoanFolders['${group.clientId}'] = !expandedLoanFolders['${group.clientId}']; render()"><div class="flex items-center gap-3 min-w-0"><div class="w-10 h-10 rounded-xl ${group.overdueCount > 0 ? 'bg-red-500/15 border border-red-500/30' : 'bg-gold-500/15 border border-gold-500/25'} flex items-center justify-center shrink-0"><i data-lucide="${open ? 'folder-open' : 'folder'}" class="w-5 h-5 ${group.overdueCount > 0 ? 'text-red-300' : 'text-gold-400'}"></i></div><div class="min-w-0"><p class="font-semibold truncate">${mvEscapeHtml(group.client?.name || 'Cliente sem cadastro')}</p><p class="text-xs ${group.overdueCount > 0 ? 'text-red-300 font-semibold' : 'text-slate-400'}">${group.clientLoans.length} empréstimos • ${group.activeCount} ativos • ${group.paidCount} quitados${group.overdueCount > 0 ? ' • ' + group.overdueCount + ' atraso(s)' : ''}</p><p class="text-sm text-gold-400">Emprestado: ${Utils.fmtMoney(group.totalAmount)} • Devido: ${Utils.fmtMoney(group.totalDue)}</p></div></div><div class="flex items-center gap-2 shrink-0"><span class="badge ${group.overdueCount > 0 ? 'badge-overdue' : group.activeCount > 0 ? 'badge-active' : 'badge-paid'}">${group.overdueCount > 0 ? 'ATRASO' : group.activeCount > 0 ? 'ativo' : 'quitado'}</span><i data-lucide="${open ? 'chevron-up' : 'chevron-down'}" class="w-4 h-4 text-slate-400"></i></div></div>${group.client ? `<button onclick="event.stopPropagation();mvStartNewLoanForClient('${group.clientId}')" class="btn-gold w-full py-2 mt-3 text-sm flex items-center justify-center gap-2"><i data-lucide="plus" class="w-4 h-4"></i> Novo empréstimo para ${mvEscapeHtml(group.client.name)}</button>` : ''}${open ? `<div class="mt-4 pt-3 border-t border-gold-800/20">${group.clientLoans.map(l => renderLoanCard(l, true)).join('')}</div>` : ''}</div>`; }).join('')}</div>`;
     };
@@ -6023,6 +6067,233 @@ ${bizName}`;
       return CrudProcessPaymentV20Base(e);
     };
 
+
+
+    /* =====================================================
+       V24.1 - CENTRAL DE COBRANCAS CONSOLIDADAS
+       Empréstimos com 2+ parcelas atrasadas: 1 cobrança/contrato.
+       Não modifica empréstimos, valores originais ou pagamentos.
+       O registro de envio é opcional, manual e local.
+       ===================================================== */
+    let mvChargeFilter = 'overdue';
+    let mvChargeSearch = '';
+    const MV_CHARGE_LOG_KEY = 'mv_financeira_charge_log_v24';
+    function mvChargeLoadLogs() {
+      try { return JSON.parse(localStorage.getItem(MV_CHARGE_LOG_KEY) || '{}') || {}; }
+      catch(e) { return {}; }
+    }
+    function mvChargeSaveLogs(logs) {
+      try { localStorage.setItem(MV_CHARGE_LOG_KEY, JSON.stringify(logs)); }
+      catch(e) { Utils.toast('Não foi possível registrar o envio neste navegador.','error'); }
+    }
+    function mvChargeRawEntries() {
+      const out = [];
+      const today = new Date();
+      const todayIso = [today.getFullYear(),String(today.getMonth()+1).padStart(2,'0'),String(today.getDate()).padStart(2,'0')].join('-');
+      for (const inst of DB.getInstallments()) {
+        if (inst.status_inst === 'pago' || inst.removed_by_loan_edit || !inst.due_date) continue;
+        const loan = DB.getLoanByKey(inst.loan_id_inst);
+        if (!loan || loan.status_loan === 'quitado' || loan.status_loan === 'cancelado') continue;
+        const client = DB.getClientById(loan.client_id);
+        if (!client) continue;
+        const det = Finance.calcInstallmentDetails(inst, todayIso);
+        const due = Number(det.totalDue || 0);
+        if (!Number.isFinite(due) || due <= 0.009) continue;
+        const delta = Utils.daysDiff(inst.due_date,todayIso);
+        const group = delta < 0 ? 'overdue' : delta === 0 ? 'today' : delta <= 3 ? 'soon' : 'future';
+        out.push({ inst, loan, client, det, due, delta, group });
+      }
+      return out.sort((a,b) => a.inst.due_date.localeCompare(b.inst.due_date) || String(a.client.name).localeCompare(String(b.client.name)) || Number(a.inst.number)-Number(b.inst.number));
+    }
+    function mvChargeEntries() {
+      const raw = mvChargeRawEntries();
+      const overdueByLoan = new Map();
+      raw.filter(e => e.group === 'overdue').forEach(e => {
+        const key = String(e.loan.loan_id);
+        if (!overdueByLoan.has(key)) overdueByLoan.set(key,[]);
+        overdueByLoan.get(key).push(e);
+      });
+      const visited = new Set();
+      const groups = [];
+      raw.forEach(e => {
+        const loanKey = String(e.loan.loan_id);
+        const group = e.group === 'overdue' ? overdueByLoan.get(loanKey) : null;
+        if (group && group.length >= 2) {
+          if (visited.has(loanKey)) return;
+          visited.add(loanKey);
+          const items = group.slice().sort((a,b) => a.inst.due_date.localeCompare(b.inst.due_date) || Number(a.inst.number)-Number(b.inst.number));
+          groups.push({ ...items[0], key:'overdue:'+loanKey, consolidated:true, items,
+            due: Finance.round2(items.reduce((sum,item)=>sum+item.due,0)),
+            delta: Math.min(...items.map(item=>item.delta)), group:'overdue' });
+        } else {
+          groups.push({ ...e, key:'inst:'+String(e.inst.id), consolidated:false, items:[e] });
+        }
+      });
+      return groups;
+    }
+    function mvChargeLookup(key) {
+      return mvChargeEntries().find(e => e.key === key || (e.items.length === 1 && e.inst.id === key));
+    }
+    function mvChargeGetLog(entry, logs) {
+      const groupedLog = logs[entry.key];
+      if (groupedLog?.lastSentAt && (!entry.consolidated || (Array.isArray(groupedLog.installmentIds) && groupedLog.installmentIds.length === entry.items.length && entry.items.every(item => groupedLog.installmentIds.includes(item.inst.id))))) return groupedLog;
+      const perItem = entry.items.map(item => logs[item.inst.id]).filter(item=>item?.lastSentAt);
+      if (perItem.length !== entry.items.length) return null;
+      return perItem.slice().sort((a,b)=>String(b.lastSentAt).localeCompare(String(a.lastSentAt)))[0];
+    }
+    function mvChargeSetFilter(value) { mvChargeFilter = value; render(); }
+    function mvChargeSetSearch(input) {
+      mvChargeSearch = input.value;
+      mvDebouncedRender('mv-charge-search',230);
+    }
+    function mvChargeText(entry) {
+      const name = String(entry.client.name || 'cliente').trim().split(/\s+/)[0];
+      const biz = DB.getConfig('business_name','MV Financeira');
+      const pix = DB.getConfig('pix_key','');
+      const pixText = pix ? `\n\nChave PIX: ${pix}` : '';
+      const now = new Date();
+      const dateRef = [String(now.getDate()).padStart(2,'0'),String(now.getMonth()+1).padStart(2,'0'),now.getFullYear()].join('/');
+      if (entry.group === 'overdue' && entry.consolidated) {
+        const details = entry.items.map(item => `• Parcela ${Number(item.inst.number)} — vencida em ${Utils.fmtDate(item.inst.due_date)} — ${Utils.fmtMoney(item.due)}`).join('\n');
+        return `Olá, ${name}.\n\nA ${biz} informa que existem ${entry.items.length} parcelas vencidas e ainda pendentes de regularização no seu empréstimo:\n\n${details}\n\nTOTAL ATUALIZADO EM ABERTO: ${Utils.fmtMoney(entry.due)} (posição de ${dateRef}).\n\nSolicitamos que a regularização seja feita o mais rápido possível, para evitar transtornos e o agravamento da pendência. Precisamos de um retorno objetivo com a confirmação do pagamento ou uma data concreta para regularização.${pixText}\n\nCaso já tenha efetuado algum pagamento, envie o comprovante para conferência e atualização dos valores.\n\nAtenciosamente,\n${biz}`;
+      }
+      if (entry.group === 'overdue') {
+        return `Olá, ${name}.\n\nA ${biz} informa que a parcela nº ${entry.inst.number} do seu empréstimo, vencida em ${Utils.fmtDate(entry.inst.due_date)}, permanece em aberto.\n\nVALOR ATUALIZADO: ${Utils.fmtMoney(entry.due)} (posição de ${dateRef}).\n\nSolicitamos a regularização com urgência, o mais rápido possível, para evitar transtornos e o agravamento da pendência. Pedimos que confirme o pagamento ou informe uma data concreta de regularização.${pixText}\n\nCaso já tenha pago, envie o comprovante para conferência.\n\nAtenciosamente,\n${biz}`;
+      }
+      const when = entry.group === 'today' ? 'vence hoje' : `vence em ${Utils.fmtDate(entry.inst.due_date)}`;
+      return `Olá, ${name}!\n\nA ${biz} lembra que a parcela nº ${entry.inst.number} do seu empréstimo ${when}.\n\nValor previsto para pagamento: ${Utils.fmtMoney(entry.due)}.${pixText}\n\nCaso já tenha realizado o pagamento, por favor, envie o comprovante para conferência.\n\nAtenciosamente,\n${biz}`;
+    }
+    function mvChargeSelect(key) {
+      const e = mvChargeLookup(key);
+      if (!e) return Utils.toast('Cobrança não encontrada ou já quitada.','error');
+      const phone = mvClientWhatsAppNumber(e.client);
+      const title = e.consolidated ? `${e.items.length} parcelas vencidas reunidas` : `Parcela #${Number(e.inst.number)}`;
+      const breakdown = e.consolidated ? e.items.map(item => `Parcela #${Number(item.inst.number)}: ${Utils.fmtMoney(item.due)} · ${Utils.fmtDate(item.inst.due_date)}`).join(' | ') : Utils.fmtDate(e.inst.due_date);
+      const modal = document.createElement('div');
+      modal.id = 'mv-charge-compose';
+      modal.className = 'modal-overlay';
+      modal.innerHTML = `<div class="modal-content fade-in">
+        <h3 class="heading-font text-xl gold-gradient mb-2">Cobrança para ${mvEscapeHtml(e.client.name)}</h3>
+        <p class="text-sm text-slate-300 mb-2">${title} · Total: <strong>${Utils.fmtMoney(e.due)}</strong></p>
+        <p class="text-xs text-slate-400 mb-3">${mvEscapeHtml(breakdown)}</p>
+        ${phone ? `<p class="text-xs text-emerald-400 mb-3">WhatsApp: +${phone}</p>` : `<p class="text-xs text-red-300 mb-3">Cadastre o telefone do cliente com DDD para abrir a conversa.</p>`}
+        <p class="text-xs text-slate-400 mb-2">Você pode editar a mensagem. O envio depende da sua confirmação no WhatsApp.</p>
+        <textarea rows="14" class="input-field mb-3" id="mv-charge-message">${mvEscapeHtml(mvChargeText(e))}</textarea>
+        <div class="flex flex-wrap gap-2 mb-3">
+          <button type="button" class="btn-outline px-3 py-3 flex-1" onclick="mvChargeCopy()"><i data-lucide="copy" class="w-4 h-4 inline"></i> Copiar</button>
+          <button type="button" class="btn-gold px-3 py-3 flex-1" onclick="mvChargeOpenWhatsApp('${mvEscapeJs(e.key)}')"><i data-lucide="message-circle" class="w-4 h-4 inline"></i> Abrir WhatsApp</button>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button type="button" class="btn-outline px-3 py-3 flex-1" onclick="mvChargeClose()">Fechar</button>
+          <button type="button" class="btn-outline px-3 py-3 flex-1" onclick="mvChargeMarkSent('${mvEscapeJs(e.key)}')">Marcar como enviado</button>
+        </div>
+        <p class="text-xs text-slate-500 mt-3">O registro é manual e local. Abrir a conversa não significa que você enviou a mensagem.</p>
+      </div>`;
+      mvChargeClose();
+      document.body.appendChild(modal);
+      if (typeof lucide !== 'undefined') lucide.createIcons();
+    }
+    function mvChargeClose() { document.getElementById('mv-charge-compose')?.remove(); }
+    function mvChargeCopy() {
+      const msg = document.getElementById('mv-charge-message')?.value || '';
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(msg).then(() => Utils.toast('Mensagem copiada!','success')).catch(() => Utils.toast('Selecione e copie a mensagem manualmente.','error'));
+      } else {
+        const field = document.getElementById('mv-charge-message');
+        if (field) { field.focus(); field.select(); try { document.execCommand('copy'); Utils.toast('Mensagem copiada!','success'); } catch(e) { Utils.toast('Copie o texto selecionado.'); } }
+      }
+    }
+    function mvChargeOpenWhatsApp(key) {
+      const e = mvChargeLookup(key);
+      if (!e) return Utils.toast('Cobrança já quitada ou alterada. Feche e atualize a lista.','error');
+      const phone = mvClientWhatsAppNumber(e.client);
+      if (!/^55\d{10,11}$/.test(phone)) return Utils.toast('Número inválido. Atualize o telefone do cliente com DDD.','error');
+      const msg = document.getElementById('mv-charge-message')?.value || mvChargeText(e);
+      window.open('https://wa.me/' + phone + '?text=' + encodeURIComponent(msg), '_blank', 'noopener,noreferrer');
+      Utils.toast('Conversa aberta. Confira e envie manualmente.');
+    }
+    function mvChargeMarkSent(key) {
+      const e = mvChargeLookup(key);
+      if (!e) return Utils.toast('Cobrança já quitada ou alterada.','error');
+      const logs = mvChargeLoadLogs();
+      const timestamp = new Date().toISOString();
+      const prior = logs[e.key] || {};
+      const next = { lastSentAt:timestamp, count:Number(prior.count || 0)+1, installmentIds:e.items.map(item => item.inst.id) };
+      logs[e.key] = next;
+      // Compatibilidade com registros anteriores e com grupo que vira parcela
+      // individual após pagamentos: cada parcela recebe o registro do envio.
+      e.items.forEach(item => {
+        const old = logs[item.inst.id] || {};
+        logs[item.inst.id] = { lastSentAt:timestamp, count:Number(old.count || 0)+1 };
+      });
+      mvChargeSaveLogs(logs);
+      mvChargeClose();
+      Utils.toast('Cobrança registrada neste aparelho.','success');
+      render();
+    }
+    function mvRenderChargeCenter() {
+      const all = mvChargeEntries();
+      const logs = mvChargeLoadLogs();
+      const overdues = all.filter(x=>x.group==='overdue');
+      const todays = all.filter(x=>x.group==='today');
+      const counts = {
+        overdue: overdues.reduce((n,x)=>n+x.items.length,0),
+        overdueContracts: overdues.length,
+        today: todays.length,
+        soon: all.filter(x=>x.group==='soon').length,
+        future: all.filter(x=>x.group==='future').length,
+        sent: all.filter(x=>mvChargeGetLog(x,logs)?.lastSentAt).length
+      };
+      const sumOverdue = Finance.round2(overdues.reduce((n,x)=>n+x.due,0));
+      const sumToday = Finance.round2(todays.reduce((n,x)=>n+x.due,0));
+      const term = mvNormalizeText(mvChargeSearch);
+      const selected = all.filter(x => {
+        const validFilter = mvChargeFilter === 'all' || (mvChargeFilter === 'sent' ? !!mvChargeGetLog(x,logs)?.lastSentAt : x.group === mvChargeFilter);
+        const text = mvNormalizeText(`${x.client.name} ${x.client.cpf || ''} ${x.client.phone || ''} ${x.items.map(y=>y.inst.number).join(' ')} ${x.loan.loan_id}`);
+        return validFilter && (!term || text.includes(term));
+      });
+      const f = (id,label,num) => `<button type="button" onclick="mvChargeSetFilter('${id}')" class="tab-btn ${mvChargeFilter===id?'active':''} border border-gold-800/20">${label} (${num})</button>`;
+      return `<div class="fade-in space-y-4">
+        <div><h2 class="mv-page-title heading-font gold-gradient">Central de Cobranças</h2><p class="text-sm text-slate-400 mt-2">Parcelas vencidas do mesmo empréstimo são reunidas em uma única cobrança. Revise e envie pelo WhatsApp pessoal.</p></div>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div class="stat-card"><p class="text-xs text-slate-400">Parcelas atrasadas</p><p class="text-xl font-semibold text-red-400">${counts.overdue}</p><p class="text-xs text-slate-400">${Utils.fmtMoney(sumOverdue)} · ${counts.overdueContracts} cobrança(s)</p></div>
+          <div class="stat-card"><p class="text-xs text-slate-400">Vencem hoje</p><p class="text-xl font-semibold text-gold-400">${counts.today}</p><p class="text-xs text-slate-400">${Utils.fmtMoney(sumToday)}</p></div>
+          <div class="stat-card"><p class="text-xs text-slate-400">Próximos 3 dias</p><p class="text-xl font-semibold">${counts.soon}</p></div>
+          <div class="stat-card"><p class="text-xs text-slate-400">Cobranças registradas</p><p class="text-xl font-semibold text-emerald-400">${counts.sent}</p><p class="text-xs text-slate-500">Registros das cobranças abertas</p></div>
+        </div>
+        <div class="card p-3"><div class="flex flex-wrap gap-2 mb-3">${f('overdue','Atrasadas',counts.overdue)}${f('today','Hoje',counts.today)}${f('soon','Próximas',counts.soon)}${f('future','Futuras',counts.future)}${f('sent','Enviadas',counts.sent)}${f('all','Todas',all.length)}</div>
+          <label for="mv-charge-search" class="text-xs text-slate-400">Buscar cliente, telefone ou CPF</label>
+          <input id="mv-charge-search" class="input-field mt-1" placeholder="Pesquisar cobrança..." oninput="mvChargeSetSearch(this)" value="${mvEscapeHtml(mvChargeSearch)}" />
+        </div>
+        ${selected.length ? selected.map(x => {
+          const sent = mvChargeGetLog(x,logs);
+          const st = x.delta < 0 ? `${-x.delta} dia(s) desde o vencimento mais antigo` : x.delta===0 ? 'Vence hoje' : `Vence em ${x.delta} dia(s)`;
+          const intro = x.consolidated ? `${x.items.length} parcelas vencidas · ${x.items.map(z=>'#'+Number(z.inst.number)).join(', ')}` : `Parcela #${Number(x.inst.number)} · Vencimento ${Utils.fmtDate(x.inst.due_date)}`;
+          const detail = x.consolidated ? `<p class="text-xs text-slate-400 mt-1">${x.items.map(z=>'#'+Number(z.inst.number)+' ('+Utils.fmtMoney(z.due)+')').join(' · ')}</p>` : '';
+          return `<div class="card p-4 ${x.delta<0?'border-red-500/30':''}">
+            <div class="flex justify-between items-start gap-2 flex-wrap"><div><p class="font-semibold">${mvEscapeHtml(x.client.name)}</p><p class="text-xs text-slate-400 mt-1">${intro}</p>${detail}<p class="text-xs ${x.delta<0?'text-red-300':'text-gold-400'} mt-1">${st}</p></div><div class="text-right"><p class="text-lg font-semibold text-gold-400">${Utils.fmtMoney(x.due)}</p>${x.consolidated?'<p class="text-xs text-red-300">Total consolidado</p>':''}</div></div>
+            <div class="flex justify-between items-center gap-2 mt-3 flex-wrap"><p class="text-xs ${sent?'text-emerald-400':'text-slate-500'}">${sent ? `Envio informado ${new Date(sent.lastSentAt).toLocaleString('pt-BR')} · ${Number(sent.count)||1} registro(s)` : 'Sem envio registrado neste aparelho'}</p>
+              <button type="button" class="btn-gold px-4 py-2 text-sm" onclick="mvChargeSelect('${mvEscapeJs(x.key)}')"><i data-lucide="message-circle" class="w-4 h-4 inline mr-1"></i> ${x.consolidated ? 'Cobrar parcelas juntas' : 'Preparar cobrança'}</button></div>
+          </div>`;
+        }).join('') : '<div class="card p-5 text-center text-slate-400">Nenhuma cobrança encontrada neste filtro.</div>'}
+        <p class="text-xs text-slate-500">Uma cobrança consolidada reúne apenas parcelas vencidas do mesmo empréstimo, não parcelas futuras nem empréstimos diferentes. Valores recalculados para hoje. Nenhum envio automático. Cobrança somente ao titular, com respeito à privacidade.</p>
+      </div>`;
+    }
+
+    // No botão de mensagem dentro do empréstimo, adota a mesma cobrança
+    // consolidada quando existem 2 ou mais parcelas em atraso no contrato.
+    const mvBuildChargeMessageV24Original = mvBuildChargeMessage;
+    mvBuildChargeMessage = function(loan, installment = null) {
+      const grouped = mvChargeEntries().find(e => e.consolidated && e.loan.loan_id === loan?.loan_id);
+      if (grouped && (!installment || grouped.items.some(item => item.inst.id === installment.id))) {
+        return mvChargeText(grouped);
+      }
+      if (installment) {
+        const single = mvChargeEntries().find(e => e.inst.id === installment.id && e.group === 'overdue');
+        if (single) return mvChargeText(single);
+      }
+      return mvBuildChargeMessageV24Original(loan,installment);
+    };
 
 </script>
 </body>
