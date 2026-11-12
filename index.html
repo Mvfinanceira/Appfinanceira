@@ -3,8 +3,8 @@
 <head>    
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>MV Financeira v24.1 - SAC e Cobranças Consolidadas</title>
-  <meta name="mv-version" content="24" />
+  <title>GRUPO MVF | MV Financeira</title>
+  <meta name="mv-version" content="25" />
   <script src="https://cdn.tailwindcss.com/3.4.17"></script>
   <script src="https://cdn.jsdelivr.net/npm/lucide@0.263.0/dist/umd/lucide.min.js"></script>
   <!-- Firebase compatível com HTML simples/GitHub Pages -->
@@ -509,6 +509,7 @@
     }
 
   </style>
+<!-- MV Financeira v25: antecipação a valor presente e pagamento avulso multa > juros > principal -->
 </head>
 <body class="h-full overflow-auto">
   <div id="app" class="h-full w-full"></div>
@@ -1104,7 +1105,7 @@ ${bizName}`;
         return Finance.round2(Number(det.principal || 0) + Number(det.totalInterestPending || 0) + Number(det.accumulatedPenalty || 0));
       },
 
-      getPresentValueForInstallment: (loan, inst, paymentDate) => {
+      getPresentValueForInstallment: (loan, inst, paymentDate, allowBelowPrincipal = false) => {
         const payDate = paymentDate || Utils.today();
         const det = Finance.calcInstallmentDetails(inst, payDate);
         const futureValue = Finance.round2(Number(det.totalDue || 0));
@@ -1115,11 +1116,11 @@ ${bizName}`;
         }
         const factor = Math.pow(1 + dailyRateDecimal, daysAhead);
         const discountedPresentValue = Finance.round2(futureValue / factor);
-        // O desconto de antecipação nunca pode reduzir o capital em aberto.
+        // Quitação integral preserva piso de capital; antecipação isolada usa VP integral.
         // Ele só pode retirar juros/encargos futuros. Ex.: emprestou R$ 1.500 hoje,
         // a quitação no mesmo dia não pode ficar abaixo de R$ 1.500.
         const principalFloor = Finance.round2(Math.max(0, Number(det.principal || 0) + Number(det.accumulatedPenalty || 0)));
-        const presentValue = Finance.round2(Math.min(futureValue, Math.max(discountedPresentValue, principalFloor)));
+        const presentValue = Finance.round2(Math.min(futureValue, Math.max(discountedPresentValue, allowBelowPrincipal ? 0 : principalFloor)));
         return {
           futureValue,
           presentValue,
@@ -1175,7 +1176,7 @@ ${bizName}`;
           });
         futuras.forEach(inst => {
           if (saldo <= 0.009) return;
-          const pv = Finance.getPresentValueForInstallment(loan, inst, payDate);
+          const pv = Finance.getPresentValueForInstallment(loan, inst, payDate, true);
           if (pv.presentValue <= 0.009 || pv.futureValue <= 0.009) return;
           if (saldo + 0.009 >= pv.presentValue) {
             const recebido = pv.presentValue;
@@ -1825,15 +1826,15 @@ ${bizName}`;
         const paidPeriodInterest = Number(inst.paid_period_interest || 0);
         const periodInterestPending = Math.max(0, periodInterest - paidPeriodInterest);
         const lastPaymentDate = inst.last_payment_date ? new Date(inst.last_payment_date + 'T12:00:00') : null;
-        const interestStartDate = lastPaymentDate && lastPaymentDate > dueDate ? lastPaymentDate : dueDate;
+        const interestStartDate = dueDate; // V25: atraso fixo contado desde vencimento
         if (todayDate < dueDate) {
           const totalDue = Math.max(0, principalRemaining + periodInterestPending);
           return { principal: principalRemaining, periodInterestPending, extraInterestPending: 0, extraInterestDaysLate: 0, accumulatedPenalty: 0, totalInterestPending: periodInterestPending, earlyDiscount: 0, daysLate: 0, totalDue, balance: totalDue };
         }
         let daysLate = 0;
-        if (todayDate > interestStartDate) daysLate = Math.floor((todayDate - interestStartDate) / 86400000);
-        const extraInterestDaysLate = principalRemaining * (lateDailyRate / 100) * daysLate;
-        const extraInterestPending = Math.max(0, extraInterestDaysLate - paidExtraInterest);
+        if (todayDate > dueDate) daysLate = Math.floor((todayDate - dueDate) / 86400000);
+        const extraInterestDaysLate = 0; // V25: Price/SAC sem juros moratórios adicionais
+        const extraInterestPending = 0; // V25: apenas juros contratuais + multa
         const totalInterestPending = periodInterestPending + extraInterestPending;
         // MULTA COMPOSTA em contratos parcelados: separada dos juros.
         // Base correta: PARCELA INTEIRA EM ABERTO = principal restante + juros da parcela + juros extras de atraso.
@@ -2691,7 +2692,7 @@ ${bizName}`;
           <div class="w-20 h-20 mx-auto mb-5 rounded-2xl bg-gradient-to-br from-gold-500 to-gold-700 flex items-center justify-center pulse-gold">
             <i data-lucide="landmark" class="w-10 h-10 text-navy-900"></i>
           </div>
-          <h1 class="heading-font gold-gradient home-title mb-3">${title}</h1>
+          <h1 class="heading-font gold-gradient home-title mb-3">GRUPO MVF</h1>
           <p class="text-slate-300 text-base leading-snug px-2">Sistema de Gestão de Empréstimos</p>
 
           <div class="home-actions">
@@ -2828,7 +2829,7 @@ ${bizName}`;
         <header class="mv-admin-header flex items-center justify-between px-3 sm:px-4 py-3 border-b border-gold-800/20">
           <div class="mv-brand-wrap flex items-center gap-2">
             <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-gold-500 to-gold-700 flex items-center justify-center shrink-0"><i data-lucide="landmark" class="w-5 h-5 text-navy-900"></i></div>
-            <span class="mv-brand-title heading-font text-lg gold-gradient">${title} <span class="text-xs text-slate-400 font-normal">v24.1</span></span>
+            <span class="mv-brand-title heading-font text-lg gold-gradient">${title} <span class="text-xs text-slate-400 font-normal">v25</span></span>
           </div>
           <button onclick="adminLoggedIn=false;adminTab='clients';Utils.clearStates();currentScreen='home';render()" class="mv-logout-btn text-slate-300 text-xs flex items-center gap-1"><i data-lucide="log-out" class="w-4 h-4"></i> <span>Sair</span></button>
         </header>
@@ -4362,7 +4363,7 @@ ${bizName}`;
             <button type="button" onclick="mvSetPaymentMode('quitacao_contrato')" class="btn-gold py-1 px-3 text-xs">Quitar contrato hoje</button>
             <button type="button" onclick="mvSetPaymentMode('antecipacao_parcelas')" class="btn-outline py-1 px-3 text-xs">Antecipar futuras</button>
           </div>
-          <p class="text-xs text-slate-400">Quitação: vencidas/atuais pelo valor cheio e futuras a valor presente. Antecipação: aplica de trás para frente.</p>
+          <p class="text-xs text-slate-400">Quitação: vencidas/atuais pelo valor cheio e futuras a valor presente. Antecipação: selecione as parcelas individualmente na tela V25.</p>
           <p class="text-xs text-emerald-300 mt-2">Quitação hoje: <b id="payoff-total-today">R$ 0,00</b> • desconto futuro: <b id="payoff-discount-total">R$ 0,00</b> • parcelas: <b id="payoff-installments-count">0</b></p>
           <p id="anticipation-preview" class="text-xs text-slate-400 mt-2"></p>
         </div>` : ''}
@@ -4870,7 +4871,7 @@ ${bizName}`;
             <button type="button" onclick="mvSetPaymentMode('quitacao_contrato')" class="btn-gold py-1 px-3 text-xs">Quitar contrato hoje</button>
             <button type="button" onclick="mvSetPaymentMode('antecipacao_parcelas')" class="btn-outline py-1 px-3 text-xs">Antecipar futuras</button>
           </div>
-          <p class="text-xs text-slate-400">Quitação: vencidas/atuais pelo valor cheio e futuras a valor presente. Antecipação: aplica de trás para frente.</p>
+          <p class="text-xs text-slate-400">Quitação: vencidas/atuais pelo valor cheio e futuras a valor presente. Antecipação: selecione as parcelas individualmente na tela V25.</p>
           <p class="text-xs text-emerald-300 mt-2">Quitação hoje: <b id="payoff-total-today">R$ 0,00</b> • desconto futuro: <b id="payoff-discount-total">R$ 0,00</b> • parcelas: <b id="payoff-installments-count">0</b></p>
           <p id="anticipation-preview" class="text-xs text-slate-400 mt-2"></p>
         </div>` : ''}
@@ -5133,7 +5134,9 @@ ${bizName}`;
     }
 
     function mvSimulateAvulsoSplit(det, value) {
-      let remaining = mvRoundMoney(value);
+      let remaining = mvRoundMoney(Math.max(0, value));
+      const paidToPenalty = mvRoundMoney(Math.min(Math.max(0, Number(det.accumulatedPenalty || 0)), remaining));
+      remaining = mvRoundMoney(remaining - paidToPenalty);
       const jurosSplit = mvSplitInterestPayment(det, remaining);
       const paidToPeriodInterest = mvRoundMoney(jurosSplit.paidToPeriodInterest || 0);
       const paidToExtraInterest = mvRoundMoney(jurosSplit.paidToExtraInterest || 0);
@@ -5141,11 +5144,8 @@ ${bizName}`;
       const paidToPrincipal = mvRoundMoney(Math.min(Number(det.principal || 0), Math.max(0, remaining)));
       remaining = mvRoundMoney(remaining - paidToPrincipal);
       return {
-        paidToPeriodInterest,
-        paidToExtraInterest,
-        paidToPenalty: 0,
-        paidToPrincipal,
-        amount: mvRoundMoney(paidToPeriodInterest + paidToExtraInterest + paidToPrincipal),
+        paidToPeriodInterest, paidToExtraInterest, paidToPenalty, paidToPrincipal,
+        amount: mvRoundMoney(paidToPenalty + paidToPeriodInterest + paidToExtraInterest + paidToPrincipal),
         unused: mvRoundMoney(Math.max(0, remaining))
       };
     }
@@ -5158,7 +5158,7 @@ ${bizName}`;
       const det = Finance.calcInstallmentDetails(workingInst, mvGetPaymentCycleReferenceDate(workingInst));
       const value = mvGetAvulsoValue();
       const split = mvSimulateAvulsoSplit(det, value);
-      preview.innerHTML = 'Aplicação: juros ' + Utils.fmtMoney(split.paidToPeriodInterest + split.paidToExtraInterest) + ' • principal ' + Utils.fmtMoney(split.paidToPrincipal) + (split.unused > 0 ? ' • sobra não aplicada ' + Utils.fmtMoney(split.unused) : '') + '. Multa não é baixada neste modo.';
+      preview.innerHTML = 'Aplicação: multa ' + Utils.fmtMoney(split.paidToPenalty) + ' • juros ' + Utils.fmtMoney(split.paidToPeriodInterest + split.paidToExtraInterest) + ' • principal ' + Utils.fmtMoney(split.paidToPrincipal) + (split.unused > 0 ? ' • sobra não aplicada ' + Utils.fmtMoney(split.unused) : '') + '. Ordem: multa → juros → principal.';
       const totalEl = document.getElementById('pay-total-money');
       const hidden = document.getElementById('pay-amount');
       if (totalEl) totalEl.textContent = Utils.fmtMoney(split.amount);
@@ -5184,7 +5184,7 @@ ${bizName}`;
 
       const title = document.getElementById('pay-mode-title');
       const nextWrap = document.getElementById('pay-next-wrap');
-      if (title) title.textContent = 'Pagamento Avulso - baixa juros e sobra abate principal';
+      if (title) title.textContent = 'Pagamento Avulso - multa → juros → principal';
       if (nextWrap) nextWrap.style.display = 'block';
       mvSetFieldValue('pay-interest-amount', 0);
       mvSetFieldValue('pay-penalty-amount', 0);
@@ -5241,7 +5241,7 @@ ${bizName}`;
           <h4 class="text-sm font-semibold text-blue-200 mb-2">Pagamento [Avulso]</h4>
           <label class="text-xs text-slate-400">Valor recebido fora da data combinada</label>
           <input type="number" step="0.01" min="0" class="input-field" id="pay-avulso-amount" value="0.00" oninput="mvUpdateAvulsoPreview()">
-          <p id="pay-avulso-preview" class="text-[11px] text-slate-400 mt-2">Baixa primeiro os juros em aberto; se sobrar, abate do principal. Não baixa multa.</p>
+          <p id="pay-avulso-preview" class="text-[11px] text-slate-400 mt-2">Baixa primeiro a multa, depois os juros contratuais e por último o principal.</p>
           <p class="text-[11px] text-slate-500 mt-1">Regra: os juros continuam sendo calculados somente sobre o principal em aberto.</p>
         `;
         principalCard.parentNode.insertBefore(avulsoCard, principalCard.nextSibling);
@@ -5286,7 +5286,7 @@ ${bizName}`;
         paid_principal: mvRoundMoney(Number(inst.paid_principal || 0) + split.paidToPrincipal),
         paid_period_interest: mvRoundMoney(Number(inst.paid_period_interest || 0) + split.paidToPeriodInterest),
         paid_extra_interest: mvRoundMoney(Number(inst.paid_extra_interest || 0) + split.paidToExtraInterest),
-        paid_penalty: mvRoundMoney(Number(inst.paid_penalty || 0)),
+        paid_penalty: mvRoundMoney(Number(inst.paid_penalty || 0) + split.paidToPenalty),
         total_paid_principal: mvRoundMoney(cumulativePrincipal),
         total_paid_period_interest: mvRoundMoney(cumulativePeriodInterest),
         total_paid_extra_interest: mvRoundMoney(cumulativeExtraInterest),
@@ -5731,14 +5731,14 @@ ${bizName}`;
       const cumulativePrincipal = mvRoundMoney(Finance.getPaidTotal(inst, 'principal') + split.paidToPrincipal);
       const cumulativePeriodInterest = mvRoundMoney(Finance.getPaidTotal(inst, 'periodInterest') + split.paidToPeriodInterest);
       const cumulativeExtraInterest = mvRoundMoney(Finance.getPaidTotal(inst, 'extraInterest') + split.paidToExtraInterest);
-      const cumulativePenalty = mvRoundMoney(Finance.getPaidTotal(inst, 'penalty'));
+      const cumulativePenalty = mvRoundMoney(Finance.getPaidTotal(inst, 'penalty') + split.paidToPenalty);
 
       let patch = {
         due_date: currentDueDate,
         paid_principal: mvRoundMoney(Number(inst.paid_principal || 0) + split.paidToPrincipal),
         paid_period_interest: mvRoundMoney(Number(inst.paid_period_interest || 0) + split.paidToPeriodInterest),
         paid_extra_interest: mvRoundMoney(Number(inst.paid_extra_interest || 0) + split.paidToExtraInterest),
-        paid_penalty: mvRoundMoney(Number(inst.paid_penalty || 0)),
+        paid_penalty: mvRoundMoney(Number(inst.paid_penalty || 0) + split.paidToPenalty),
         total_paid_principal: cumulativePrincipal,
         total_paid_period_interest: cumulativePeriodInterest,
         total_paid_extra_interest: cumulativeExtraInterest,
@@ -5781,16 +5781,16 @@ ${bizName}`;
         Utils.toast('Avulso aplicado: juros baixados e sobra abatida do capital. Novo ciclo atualizado.', 'success');
       } else {
         patch = { ...patch, status_inst: 'pendente' };
-        Utils.toast('Avulso aplicado: juros baixados primeiro e sobra abatida do capital.', 'success');
+        Utils.toast('Avulso aplicado: multa, juros e capital nesta ordem.', 'success');
       }
 
       DB.addPayment({
         id: Utils.uid(), type: 'payment', payment_id: Utils.uid(), installment_id_pay: inst.id, loan_id_pay: inst.loan_id_inst,
         payment_amount: split.amount, payment_date: paymentDate, payment_cycle_reference_date: paymentDate,
         payment_type: 'avulso', payment_split_version: 19, previous_due_date: currentDueDate, due_date_before_payment: currentDueDate, new_due_date: newDue !== currentDueDate ? newDue : '',
-        paid_to_principal: split.paidToPrincipal, paid_to_period_interest: split.paidToPeriodInterest, paid_to_extra_interest: split.paidToExtraInterest, paid_to_penalty: 0,
+        paid_to_principal: split.paidToPrincipal, paid_to_period_interest: split.paidToPeriodInterest, paid_to_extra_interest: split.paidToExtraInterest, paid_to_penalty: split.paidToPenalty,
         penalty_discount_percent: 0, penalty_discount_value: 0, paid_extra_to_future_installments: 0, normal_excess_unallocated: split.unused,
-        observacao: 'Pagamento avulso: baixa juros primeiro; excedente abate capital/principal. Multa permanece separada.'
+        observacao: 'Pagamento avulso v25: multa primeiro, juros contratuais em seguida, excedente abate capital/principal.'
       });
       DB.updateInstallment(inst.id, patch);
       const allInst = DB.getInstallmentsByLoan(inst.loan_id_inst);
@@ -5987,8 +5987,8 @@ ${bizName}`;
       if (days <= 0) return { days:0, discount:0, interestPending:0, principal:0 };
       const det = Finance.calcInstallmentDetails(inst, paymentDate);
       const dailyRate = Number(loan.daily_rate_used ?? loan.late_daily_rate ?? 0);
-      const raw = Number(det.principal || 0) * (dailyRate / 100) * days;
-      const discount = mvRoundMoney(Math.min(Number(det.periodInterestPending || 0), Math.max(0, raw)));
+      const pv = Finance.getPresentValueForInstallment(loan, inst, paymentDate, true);
+      const discount = mvRoundMoney(pv.discount);
       return { days, discount, interestPending: mvRoundMoney(det.periodInterestPending || 0), principal: mvRoundMoney(det.principal || 0), dailyRate };
     }
     window.mvCalcEarlyInstallmentDiscount = mvCalcEarlyInstallmentDiscount;
@@ -6009,12 +6009,12 @@ ${bizName}`;
       const payDate = document.getElementById('pay-date')?.value || Utils.today();
       const workingInst = { ...inst, due_date: mvGetPaymentCurrentDue(inst) };
       const info = mvCalcEarlyInstallmentDiscount(workingInst, payDate);
-      if (!info.discount || !(mode === 'integral' || mode === 'juros')) {
+      if (!info.discount || info.discount > Number(inst.interest || 0) + 0.009 || !(mode === 'integral' || mode === 'juros')) {
         box.style.display = 'none';
         return;
       }
       box.style.display = 'block';
-      box.innerHTML = `<p class="font-semibold text-emerald-300 mb-1">Desconto por pagamento antecipado</p><p>Pagamento ${info.days} dia(s) antes do vencimento. Desconto calculado pela taxa diária do empréstimo: <b>${Number(info.dailyRate || 0).toFixed(4)}%</b>.</p><p class="mt-1">Desconto aplicado somente nos juros da parcela: <b class="text-emerald-300">${Utils.fmtMoney(info.discount)}</b>. O principal não é reduzido.</p>`;
+      box.innerHTML = `<p class="font-semibold text-emerald-300 mb-1">Desconto por pagamento antecipado</p><p>Pagamento ${info.days} dia(s) antes do vencimento. Desconto calculado pela taxa diária do empréstimo: <b>${Number(info.dailyRate || 0).toFixed(4)}%</b>.</p><p class="mt-1">Desconto calculado sobre o valor total da parcela (valor presente): <b class="text-emerald-300">${Utils.fmtMoney(info.discount)}</b>. A diferença é registrada como desconto, não como pagamento.</p>`;
     }
 
     const mvSetPaymentModeV20Base = mvSetPaymentMode;
@@ -6027,7 +6027,7 @@ ${bizName}`;
         if (inst) {
           const workingInst = { ...inst, due_date: mvGetPaymentCurrentDue(inst) };
           const info = mvCalcEarlyInstallmentDiscount(workingInst, payDate);
-          if (info.discount > 0) {
+          if (info.discount > 0 && info.discount <= Number(workingInst.interest || 0) + 0.009) {
             const interestInput = document.getElementById('pay-interest-amount');
             if (interestInput) {
               const current = Number(interestInput.value || 0);
@@ -6052,7 +6052,7 @@ ${bizName}`;
         const freshInst = inst ? DB.getInstallmentById(inst.id) : null;
         const info = freshInst ? mvCalcEarlyInstallmentDiscount(freshInst, paymentDate) : { discount:0 };
         const data = mvPaymentInputs();
-        if (info.discount > 0 && (type === 'integral' || type === 'juros') && data.juros > 0) {
+        if (info.discount > 0 && info.discount <= Number(freshInst.interest || 0) + 0.009 && (type === 'integral' || type === 'juros') && data.juros > 0) {
           const oldInterest = Number(freshInst.interest || 0);
           const newInterest = mvRoundMoney(Math.max(0, oldInterest - info.discount));
           DB.updateInstallment(freshInst.id, {
@@ -6293,6 +6293,155 @@ ${bizName}`;
         if (single) return mvChargeText(single);
       }
       return mvBuildChargeMessageV24Original(loan,installment);
+    };
+
+
+    /* ===== MV FINANCEIRA V25 - OPERAÇÕES REAIS PRICE / SAC ===== */
+    let mv25Selected = new Set();
+    let mv25Dialog = '';
+    function mv25Loan(inst) { return inst ? DB.getLoanByKey(inst.loan_id_inst) : null; }
+    function mv25Fixed(loan) { return loan && !Finance.isProportionalLoan(loan); }
+    function mv25OpenInst(loan) { return DB.getInstallmentsByLoan(loan.loan_id).filter(x=>x.status_inst!=='pago'&&!x.removed_by_loan_edit).sort((a,b)=>String(a.due_date).localeCompare(String(b.due_date))||Number(a.number)-Number(b.number)); }
+    function mv25Close() { document.getElementById('mv25-dialog')?.remove(); mv25Dialog=''; }
+    function mv25Wrap(html) {
+      mv25Close(); mv25Dialog=html;
+      const node=document.createElement('div');node.id='mv25-dialog';node.className='modal-overlay';node.style.cssText='position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.84);display:flex;align-items:center;justify-content:center;padding:12px;overflow:auto';
+      node.innerHTML=`<div class="card p-4 sm:p-5" style="width:100%;max-width:580px;max-height:92vh;overflow:auto"><div class="flex justify-between items-center mb-3"><h3 class="font-semibold text-lg gold-gradient">MV Financeira · V25</h3><button class="btn-outline px-3 py-1" onclick="mv25Close()">Fechar ×</button></div>${html}</div>`;
+      document.body.appendChild(node);lucide.createIcons();
+    }
+    function mv25Source() {
+      const id=activeModal?.instId||activeModal?.inst?.id;
+      return id?DB.getInstallmentById(id):null;
+    }
+    function mv25Date() { return document.getElementById('mv25-date')?.value||Utils.today(); }
+    function mv25Preview() {
+      const inst=mv25Source();const loan=mv25Loan(inst);const area=document.getElementById('mv25-rows');if(!area||!loan)return;
+      const date=mv25Date();const future=mv25OpenInst(loan).filter(x=>Utils.daysDiff(x.due_date,date)>0);
+      const budget=Number(document.getElementById('mv25-budget')?.value||0);
+      let total=0,original=0,selected=[];
+      for(const x of future) if(mv25Selected.has(x.id)) {
+        const pv=Finance.getPresentValueForInstallment(loan,x,date,true);
+        total=mvRoundMoney(total+pv.presentValue);original=mvRoundMoney(original+pv.futureValue);selected.push(x);
+      }
+      area.innerHTML=future.map(x=>{
+        const pv=Finance.getPresentValueForInstallment(loan,x,date,true);
+        return `<label class="flex items-center gap-3 p-3 border-b border-gold-800/20 cursor-pointer"><input type="checkbox" ${mv25Selected.has(x.id)?'checked':''} onchange="mv25Toggle('${mvEscapeJs(x.id)}',this.checked)"><span class="flex-1 text-sm">#${x.number} · ${Utils.fmtDate(x.due_date)}<br><span class="text-slate-400">Original ${Utils.fmtMoney(pv.futureValue)} · desconto ${Utils.fmtMoney(pv.discount)}</span></span><b class="text-emerald-300">${Utils.fmtMoney(pv.presentValue)}</b></label>`;
+      }).join('')||'<p class="text-slate-400 text-sm p-3">Nenhuma parcela futura disponível.</p>';
+      document.getElementById('mv25-count').textContent=selected.length;
+      document.getElementById('mv25-total').textContent=Utils.fmtMoney(total);
+      document.getElementById('mv25-discount').textContent=Utils.fmtMoney(original-total);
+      document.getElementById('mv25-budget-result').textContent=budget>0?(budget+0.009>=total?'Valor disponível cobre a seleção.':'Valor insuficiente para a seleção.'):'';
+    }
+    function mv25Toggle(id,checked) { if(checked)mv25Selected.add(id);else mv25Selected.delete(id);mv25Preview(); }
+    function mv25SelectByBudget() {
+      const inst=mv25Source(),loan=mv25Loan(inst),date=mv25Date(),budget=Number(document.getElementById('mv25-budget')?.value||0);
+      if(!loan||budget<=0)return Utils.toast('Informe o valor disponível.','error');
+      mv25Selected.clear();let sum=0;
+      for(const x of mv25OpenInst(loan).filter(x=>Utils.daysDiff(x.due_date,date)>0)) {
+        const pv=Finance.getPresentValueForInstallment(loan,x,date,true);
+        if(sum+pv.presentValue<=budget+0.009){mv25Selected.add(x.id);sum=mvRoundMoney(sum+pv.presentValue);}
+      }mv25Preview();
+    }
+    function mv25SelectedQuote() {
+      const inst=mv25Source(),loan=mv25Loan(inst),date=mv25Date();if(!loan)return null;
+      const items=mv25OpenInst(loan).filter(x=>mv25Selected.has(x.id)&&Utils.daysDiff(x.due_date,date)>0).map(x=>({inst:x,pv:Finance.getPresentValueForInstallment(loan,x,date,true)}));
+      return {loan,date,items,total:mvRoundMoney(items.reduce((n,x)=>n+x.pv.presentValue,0)),original:mvRoundMoney(items.reduce((n,x)=>n+x.pv.futureValue,0))};
+    }
+    function mv25QuoteText() {
+      const q=mv25SelectedQuote();if(!q||!q.items.length)return Utils.toast('Selecione pelo menos uma parcela.','error');
+      const client=DB.getClientById(q.loan.client_id),pix=DB.getConfig('pix_key','Não configurado');
+      const msg=`Olá, ${client?.name||'cliente'}!\n\nGRUPO MVF · MV FINANCEIRA\nProposta de antecipação de parcelas\nData de referência: ${Utils.fmtDate(q.date)}\n\n${q.items.map(x=>`Parcela #${x.inst.number} (${Utils.fmtDate(x.inst.due_date)}): de ${Utils.fmtMoney(x.pv.futureValue)} por ${Utils.fmtMoney(x.pv.presentValue)}`).join('\n')}\n\nValor original: ${Utils.fmtMoney(q.original)}\nDesconto concedido: ${Utils.fmtMoney(q.original-q.total)}\nTOTAL PARA QUITAÇÃO: ${Utils.fmtMoney(q.total)}\nPIX: ${pix}\n\nProposta sujeita à confirmação do recebimento. Após pagar, envie o comprovante.`;
+      const phone=String(client?.phone||client?.telefone||'').replace(/\D/g,'');
+      if(phone){window.open('https://wa.me/'+(phone.startsWith('55')?phone:'55'+phone)+'?text='+encodeURIComponent(msg),'_blank','noopener');}
+      else if(navigator.clipboard?.writeText){navigator.clipboard.writeText(msg).then(()=>Utils.toast('Mensagem copiada para enviar ao cliente.','success'));}
+      else {window.prompt('Copie a proposta:',msg);}
+    }
+    function mv25OpenAnticipation() {
+      const inst=mv25Source(),loan=mv25Loan(inst);if(!mv25Fixed(loan))return Utils.toast('Disponível para Price e SAC.','error');
+      document.getElementById('payment-modal')?.remove();mv25Selected.clear();
+      mv25Wrap(`<p class="text-xs text-slate-400 mb-3">Selecione as parcelas individualmente ou informe o orçamento para selecionar as mais próximas. Os descontos usam valor presente integral.</p><label class="text-xs text-slate-400">Data de pagamento</label><input id="mv25-date" type="date" class="input-field mb-3" value="${Utils.today()}" onchange="mv25Preview()"><label class="text-xs text-slate-400">Valor disponível (opcional)</label><div class="flex gap-2 mb-3"><input id="mv25-budget" type="number" step="0.01" min="0" class="input-field flex-1" placeholder="Ex.: 2000" oninput="mv25Preview()"><button class="btn-outline px-3" onclick="mv25SelectByBudget()">Selecionar</button></div><div id="mv25-rows" class="mb-3"></div><div class="card p-3 mb-3"><p>Parcelas selecionadas: <b id="mv25-count">0</b></p><p>Desconto: <b class="text-emerald-300" id="mv25-discount">R$ 0,00</b></p><p class="font-semibold">Total para quitar: <span id="mv25-total">R$ 0,00</span></p><p class="text-xs text-yellow-300" id="mv25-budget-result"></p></div><div class="grid grid-cols-1 sm:grid-cols-2 gap-2"><button class="btn-outline py-3" onclick="mv25QuoteText()">Gerar proposta WhatsApp</button><button class="btn-gold py-3" onclick="mv25ApplyAnticipation()">Confirmar recebimento e quitar</button></div>`);mv25Preview();
+    }
+    function mv25RefreshLoan(loan) {
+      const paid=DB.getInstallmentsByLoan(loan.loan_id).every(x=>x.status_inst==='pago'||x.removed_by_loan_edit);
+      DB.updateLoan(loan.id,{status_loan:paid?'quitado':'ativo'});
+    }
+    function mv25ApplyAnticipation() {
+      const q=mv25SelectedQuote();if(!q||!q.items.length)return Utils.toast('Selecione parcelas futuras.','error');
+      if(!confirm('Confirmar recebimento de '+Utils.fmtMoney(q.total)+' e quitar '+q.items.length+' parcela(s)?'))return;
+      const affected=[];
+      for(const {inst,pv} of q.items){
+        const original=Number(inst.principal||0)+Number(inst.interest||0);
+        DB.updateInstallment(inst.id,{original_principal_before_discount:Number(inst.original_principal_before_discount??inst.principal??0),original_interest_before_discount:Number(inst.original_interest_before_discount??inst.interest??0),original_installment_amount_before_discount:Number(inst.original_installment_amount_before_discount??inst.installment_amount??original),principal:0,interest:0,installment_amount:0,paid_principal:0,paid_period_interest:0,paid_extra_interest:0,status_inst:'pago',status_antecipacao:'quitada_antecipada',antecipacao_data:q.date,antecipacao_valor_recebido:mvRoundMoney(Number(inst.antecipacao_valor_recebido||0)+pv.presentValue),antecipacao_desconto:mvRoundMoney(Number(inst.antecipacao_desconto||0)+pv.discount),antecipacao_baixa_total:mvRoundMoney(Number(inst.antecipacao_baixa_total||0)+pv.futureValue),discount_applied:mvRoundMoney(Number(inst.discount_applied||0)+pv.discount)});
+        affected.push({installmentId:inst.id,numeroParcela:inst.number,valorOriginalParcela:pv.futureValue,valorRecebidoAplicado:pv.presentValue,descontoAplicado:pv.discount});
+      }
+      DB.addPayment({id:Utils.uid(),type:'payment',payment_id:Utils.uid(),installment_id_pay:q.items[0].inst.id,loan_id_pay:q.loan.loan_id,payment_amount:q.total,payment_date:q.date,payment_type:'antecipacao_selecionada_v25',payment_split_version:25,parcelas_afetadas:affected,antecipacao_discount_total:mvRoundMoney(q.original-q.total),antecipacao_total_baixado:q.original,antecipacao_valor_recebido_aplicado:q.total,observacao:'Antecipação selecionada pelo administrador, com valor presente e desconto separado.'});
+      mv25RefreshLoan(q.loan);mv25Close();activeModal=null;Utils.toast('Parcelas selecionadas quitadas. Desconto registrado separadamente.','success');render();
+    }
+    function mv25ApplySplit(inst,loan,date,amount,kind) {
+      const det=Finance.calcInstallmentDetails(inst,date),split=mvSimulateAvulsoSplit(det,amount);
+      if(split.amount<=0)return {amount:0,unused:amount};
+      const patch={paid_principal:mvRoundMoney(Number(inst.paid_principal||0)+split.paidToPrincipal),paid_period_interest:mvRoundMoney(Number(inst.paid_period_interest||0)+split.paidToPeriodInterest),paid_extra_interest:mvRoundMoney(Number(inst.paid_extra_interest||0)+split.paidToExtraInterest),paid_penalty:mvRoundMoney(Number(inst.paid_penalty||0)+split.paidToPenalty),total_paid_principal:mvRoundMoney(Finance.getPaidTotal(inst,'principal')+split.paidToPrincipal),total_paid_period_interest:mvRoundMoney(Finance.getPaidTotal(inst,'periodInterest')+split.paidToPeriodInterest),total_paid_extra_interest:mvRoundMoney(Finance.getPaidTotal(inst,'extraInterest')+split.paidToExtraInterest),total_paid_penalty:mvRoundMoney(Finance.getPaidTotal(inst,'penalty')+split.paidToPenalty),last_payment_date:date};
+      const after=Finance.calcInstallmentDetails({...inst,...patch},date);patch.status_inst=after.totalDue<=0.009?'pago':'pendente';
+      DB.updateInstallment(inst.id,patch);
+      DB.addPayment({id:Utils.uid(),type:'payment',payment_id:Utils.uid(),installment_id_pay:inst.id,loan_id_pay:loan.loan_id,payment_amount:split.amount,payment_date:date,payment_type:kind,payment_split_version:25,paid_to_penalty:split.paidToPenalty,paid_to_period_interest:split.paidToPeriodInterest,paid_to_extra_interest:split.paidToExtraInterest,paid_to_principal:split.paidToPrincipal,observacao:'V25: multa → juros contratuais → principal; parcela mais antiga primeiro.'});
+      return {amount:split.amount,unused:split.unused};
+    }
+    function mv25OpenAvulso() {
+      const inst=mv25Source(),loan=mv25Loan(inst);if(!mv25Fixed(loan))return Utils.toast('Disponível para Price e SAC.','error');
+      document.getElementById('payment-modal')?.remove();
+      mv25Wrap(`<p class="text-sm text-slate-300 mb-3">Distribui automaticamente o valor recebido pelas parcelas mais antigas, incluindo as vencidas. Dentro de cada parcela: multa → juros contratuais → principal.</p><label class="text-xs text-slate-400">Data do pagamento</label><input id="mv25-date" type="date" class="input-field mb-3" value="${Utils.today()}" onchange="mv25AvulsoPreview()"><label class="text-xs text-slate-400">Valor recebido</label><input id="mv25-amount" type="number" min="0.01" step="0.01" class="input-field mb-3" oninput="mv25AvulsoPreview()" placeholder="0,00"><div id="mv25-avulso-preview" class="card p-3 mb-3 text-xs text-slate-300"></div><button class="btn-gold w-full py-3" onclick="mv25ConfirmAvulso()">Confirmar pagamento avulso</button>`);mv25AvulsoPreview();
+    }
+    function mv25AvulsoPreview() {
+      const loan=mv25Loan(mv25Source()),date=mv25Date(),el=document.getElementById('mv25-avulso-preview');if(!loan||!el)return;
+      let remaining=Math.max(0,Number(document.getElementById('mv25-amount')?.value||0));let lines=[];
+      for(const inst of mv25OpenInst(loan)){
+        if(remaining<=0.009)break;
+        const split=mvSimulateAvulsoSplit(Finance.calcInstallmentDetails(inst,date),remaining);
+        if(split.amount>0){lines.push(`#${inst.number}: ${Utils.fmtMoney(split.amount)} (multa ${Utils.fmtMoney(split.paidToPenalty)}, juros ${Utils.fmtMoney(split.paidToPeriodInterest+split.paidToExtraInterest)}, principal ${Utils.fmtMoney(split.paidToPrincipal)})`);remaining=mvRoundMoney(remaining-split.amount);}
+      }el.innerHTML=lines.map(x=>`<p class="mb-1">${x}</p>`).join('')+(remaining>0?`<p class="text-yellow-300">Sobra não aplicada: ${Utils.fmtMoney(remaining)}</p>`:'');
+    }
+    function mv25ConfirmAvulso() {
+      const loan=mv25Loan(mv25Source()),date=mv25Date(),amount=mvRoundMoney(Number(document.getElementById('mv25-amount')?.value||0));
+      if(!loan||amount<=0)return Utils.toast('Informe o valor recebido.','error');
+      let remaining=amount,applied=0;
+      const list=mv25OpenInst(loan);let capacity=0;
+      for(const inst of list)capacity+=Finance.calcInstallmentDetails(inst,date).totalDue;
+      if(amount>capacity+0.009)return Utils.toast('O valor supera o saldo total das parcelas. Ajuste antes de confirmar.','error');
+      if(!confirm('Confirmar pagamento avulso de '+Utils.fmtMoney(amount)+' nas parcelas mais antigas?'))return;
+      for(const inst of list){if(remaining<=0.009)break;const r=mv25ApplySplit(inst,loan,date,remaining,'avulso_v25');remaining=mvRoundMoney(remaining-r.amount);applied+=r.amount;}
+      mv25RefreshLoan(loan);mv25Close();activeModal=null;Utils.toast('Pagamento distribuído pelas parcelas mais antigas: '+Utils.fmtMoney(applied),'success');render();
+    }
+    function mv25OpenNegotiation() {
+      const inst=mv25Source(),loan=mv25Loan(inst);if(!mv25Fixed(loan))return Utils.toast('Disponível para Price e SAC.','error');
+      document.getElementById('payment-modal')?.remove();
+      mv25Wrap(`<p class="text-sm mb-2">Negociar quitação integral da parcela <b>#${inst.number}</b>, mesmo com valor recebido menor que o devido.</p><label class="text-xs text-slate-400">Data da negociação</label><input id="mv25-date" type="date" class="input-field mb-3" value="${Utils.today()}" onchange="mv25NegotiationPreview()"><label class="text-xs text-slate-400">Valor efetivamente recebido</label><input id="mv25-amount" type="number" min="0.01" step="0.01" class="input-field mb-3" oninput="mv25NegotiationPreview()" placeholder="Ex.: 500"><div id="mv25-neg-preview" class="card p-3 text-sm mb-3"></div><p class="text-xs text-slate-400 mb-3">A diferença será registrada como desconto de negociação, nunca como dinheiro recebido.</p><button class="btn-gold w-full py-3" onclick="mv25ConfirmNegotiation()">Confirmar quitação negociada</button>`);mv25NegotiationPreview();
+    }
+    function mv25NegotiationPreview(){const inst=mv25Source(),el=document.getElementById('mv25-neg-preview');if(!inst||!el)return;const due=Finance.calcInstallmentDetails(inst,mv25Date()).totalDue,paid=Number(document.getElementById('mv25-amount')?.value||0);el.innerHTML=`Total devido: <b>${Utils.fmtMoney(due)}</b><br>Recebimento: <b>${Utils.fmtMoney(paid)}</b><br>Desconto negociado: <b class="text-emerald-300">${Utils.fmtMoney(Math.max(0,due-paid))}</b>`;}
+    function mv25ConfirmNegotiation(){
+      const inst=mv25Source(),loan=mv25Loan(inst),date=mv25Date(),due=mvRoundMoney(Finance.calcInstallmentDetails(inst,date).totalDue),paid=mvRoundMoney(Number(document.getElementById('mv25-amount')?.value||0));
+      if(!inst||!loan||paid<=0||paid>due+0.009)return Utils.toast('Informe valor recebido maior que zero e não superior ao devido.','error');
+      if(!confirm('Quitar integralmente a parcela #'+inst.number+' recebendo '+Utils.fmtMoney(paid)+' e concedendo desconto de '+Utils.fmtMoney(due-paid)+'?'))return;
+      const discount=mvRoundMoney(due-paid),principal=Number(inst.principal||0),interest=Number(inst.interest||0);
+      DB.updateInstallment(inst.id,{original_principal_before_discount:Number(inst.original_principal_before_discount??principal),original_interest_before_discount:Number(inst.original_interest_before_discount??interest),original_installment_amount_before_discount:Number(inst.original_installment_amount_before_discount??inst.installment_amount??(principal+interest)),principal:0,interest:0,installment_amount:0,paid_principal:0,paid_period_interest:0,paid_extra_interest:0,paid_penalty:0,status_inst:'pago',status_negociacao:'quitada_negociada',negociacao_data:date,negociacao_valor_recebido:paid,negociacao_desconto:discount,discount_applied:mvRoundMoney(Number(inst.discount_applied||0)+discount)});
+      DB.addPayment({id:Utils.uid(),type:'payment',payment_id:Utils.uid(),installment_id_pay:inst.id,loan_id_pay:loan.loan_id,payment_amount:paid,payment_date:date,payment_type:'quitacao_negociada_v25',payment_split_version:25,negociacao_valor_original:due,negociacao_desconto:discount,observacao:'Quitação negociada da parcela específica. Diferença registrada como desconto, não como recebimento.'});
+      mv25RefreshLoan(loan);mv25Close();activeModal=null;Utils.toast('Parcela quitada por negociação.','success');render();
+    }
+    // Os botões ficam dentro da janela de pagamento da parcela, sem alterar o login do cliente.
+    const mv25ShowPaymentModalBase=showPaymentModal;
+    showPaymentModal=function(){
+      mv25ShowPaymentModalBase();
+      const inst=mv25Source(),loan=mv25Loan(inst);if(!mv25Fixed(loan))return;
+      const modal=document.getElementById('payment-modal');if(!modal)return;
+      const content=modal.querySelector('.modal-content')||modal.querySelector('.card');if(!content)return;
+      const bar=document.createElement('div');bar.className='card p-3 mb-3 border-gold-500/30';bar.innerHTML=`<p class="text-sm font-semibold mb-2">Operações V25 · Price / SAC</p><div class="grid grid-cols-1 sm:grid-cols-2 gap-2"><button type="button" class="btn-outline py-2 text-xs" onclick="mv25OpenAvulso()">Avulso · parcelas antigas</button><button type="button" class="btn-outline py-2 text-xs" onclick="mv25OpenAnticipation()">Selecionar antecipação</button><button type="button" class="btn-gold py-2 text-xs sm:col-span-2" onclick="mv25OpenNegotiation()">Quitar parcela por negociação</button></div>`;
+      content.insertBefore(bar,content.firstChild);
+    };
+    // A modalidade de antecipação antiga é substituída pela seleção individual.
+    const mv25PaymentModeBase=mvSetPaymentMode;
+    mvSetPaymentMode=function(mode){
+      if(mode==='antecipacao_parcelas'&&mv25Fixed(mv25Loan(mv25Source())))return mv25OpenAnticipation();
+      if(mode==='avulso'&&mv25Fixed(mv25Loan(mv25Source())))return mv25OpenAvulso();
+      return mv25PaymentModeBase(mode);
     };
 
 </script>
