@@ -993,12 +993,30 @@ ${bizName}`;
         const [totalKey, currentKey] = map[key] || [];
         return Number((totalKey && inst?.[totalKey] != null) ? inst[totalKey] : (currentKey ? inst?.[currentKey] : 0)) || 0;
       },
+      // V25.2: vencimentos mensais ancorados no dia da primeira parcela.
+      // Para dias 29/30/31, usa o último dia do mês curto sem perder o dia original.
+      addCalendarMonths: (dateISO, offset) => {
+        const [year, month, day] = String(dateISO).split('-').map(Number);
+        if (!year || !month || !day) return dateISO;
+        const target = new Date(Date.UTC(year, month - 1 + Number(offset || 0), 1, 12));
+        const last = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0, 12)).getUTCDate();
+        return `${target.getUTCFullYear()}-${String(target.getUTCMonth()+1).padStart(2,'0')}-${String(Math.min(day,last)).padStart(2,'0')}`;
+      },
+      // Renova com âncora no vencimento anterior, nunca na data do pagamento.
+      getRenewedDueFromPrevious: (loan, previousDue) => {
+        if (loan?.frequency === 'mensal') return Finance.addCalendarMonths(previousDue, 1);
+        const freqDays = { diario:1, semanal:7, quinzenal:15, mensal:30 };
+        const d = new Date(previousDue + 'T12:00:00');
+        d.setDate(d.getDate() + (freqDays[loan?.frequency] || 30));
+        return d.toISOString().split('T')[0];
+      },
       getScheduledDueDate: (loan, installmentNumber, fallbackDate = '') => {
         if (!loan?.first_due) return fallbackDate || Utils.today();
-        const freqDays = { diario:1, semanal:7, quinzenal:15, mensal:30 };
-        const days = freqDays[loan.frequency] || 30;
+        const index = Math.max(0, Number(installmentNumber || 1) - 1);
+        if ((loan.frequency || 'mensal') === 'mensal') return Finance.addCalendarMonths(loan.first_due, index);
+        const days = ({ diario:1, semanal:7, quinzenal:15 }[loan.frequency] || 30) * index;
         const d = new Date(loan.first_due + 'T12:00:00');
-        d.setDate(d.getDate() + (Number(installmentNumber || 1) - 1) * days);
+        d.setDate(d.getDate() + days);
         return d.toISOString().split('T')[0];
       },
       getAutomaticNextDueDate: (loan, paymentDate) => {
@@ -1745,10 +1763,15 @@ ${bizName}`;
       },
       generateInstallmentDates: (firstDue, frequency, count) => {
         const dates = [];
-        const freqDays = { diario:1, semanal:7, quinzenal:15, mensal:30 };
-        const days = freqDays[frequency] || 30;
-        let d = new Date(firstDue + 'T12:00:00');
-        for (let i = 0; i < count; i++) { dates.push(d.toISOString().split('T')[0]); d = new Date(d.getTime() + days * 86400000); }
+        const days = ({ diario:1, semanal:7, quinzenal:15 }[frequency] || 30);
+        for (let i = 0; i < count; i++) {
+          if (frequency === 'mensal') dates.push(Finance.addCalendarMonths(firstDue, i));
+          else {
+            const d = new Date(firstDue + 'T12:00:00');
+            d.setDate(d.getDate() + i * days);
+            dates.push(d.toISOString().split('T')[0]);
+          }
+        }
         return dates;
       },
       ensureInstallmentsForLoan: (loan) => {
@@ -2341,8 +2364,8 @@ ${bizName}`;
         };
 
         let desiredNewDue = nextDueDate;
-        if (desiredNewDue && new Date(desiredNewDue + 'T12:00:00') <= new Date(paymentDate + 'T12:00:00')) {
-          return Utils.toast('A nova data precisa ser maior que a data do pagamento', 'error');
+        if (desiredNewDue && new Date(desiredNewDue + 'T12:00:00') <= new Date(previousDueDate + 'T12:00:00')) {
+          return Utils.toast('O próximo vencimento precisa ser posterior ao vencimento anterior', 'error');
         }
 
         // Em contrato recorrente/saldo corrido, quando a data real do pagamento é antes ou no vencimento,
@@ -2441,8 +2464,8 @@ ${bizName}`;
             const paymentBeforeDue = new Date(paymentDate + 'T12:00:00') <= new Date(previousDueDate + 'T12:00:00');
             // Se pagou antes/no vencimento e quitou o ciclo, o vencimento precisa avançar para o próximo ciclo.
             // Antes o sistema mantinha o vencimento antigo, e por isso no dia de hoje aparecia multa indevida.
-            const baseDateForNextDue = paymentBeforeDue ? previousDueDate : paymentDate;
-            newDue = desiredNewDue || Finance.getAutomaticNextDueDate(loanForDue, baseDateForNextDue);
+            const baseDateForNextDue = previousDueDate;
+            newDue = desiredNewDue || Finance.getRenewedDueFromPrevious(loanForDue, baseDateForNextDue);
             const roundedPrincipal = Math.round(remainingPrincipalAfterPayment * 100) / 100;
             patch = {
               ...patch,
@@ -2451,7 +2474,7 @@ ${bizName}`;
               principal: roundedPrincipal,
               interest: 0,
               installment_amount: roundedPrincipal,
-              interest_start_date: paymentCycleReferenceDate,
+              interest_start_date: paymentDate,
               paid_principal: 0,
               paid_period_interest: 0,
               paid_extra_interest: 0,
@@ -2462,7 +2485,7 @@ ${bizName}`;
               last_payment_date: '',
               status_inst: 'pendente'
             };
-            Utils.toast('Pagamento registrado. Juros/multa quitados e saldo corrido atualizado pela data do pagamento!', 'success');
+            Utils.toast('Pagamento registrado. Juros/multa quitados e saldo corrido renovado a partir do vencimento anterior!', 'success');
           }
         }
 
@@ -3672,7 +3695,7 @@ ${bizName}`;
           <p><b class="text-gold-400">4.</b> Em atraso, a multa é calculada separadamente do juros. A multa é de 1% ao dia composto conforme o tipo do contrato.</p>
           <p><b class="text-gold-400">5.</b> Em atraso, há juros extras proporcionais sobre o principal restante, usando a taxa informada no empréstimo.</p>
           <p><b class="text-gold-400">6.</b> Pagamentos parciais seguem a ordem: juros do período → juros extras → multa → principal.</p>
-          <p><b class="text-gold-400">7.</b> Pagamento apenas de juros e multa renova o vencimento em 30 dias.</p>
+          <p><b class="text-gold-400">7.</b> Pagamento dos juros e encargos permite renovar o ciclo com referência no vencimento anterior.</p>
         </div>
       </div>`;
     }
@@ -4233,8 +4256,8 @@ ${bizName}`;
       }
 
       let desiredNewDue = nextDueDate;
-      if (desiredNewDue && new Date(desiredNewDue + 'T12:00:00') <= new Date(paymentDate + 'T12:00:00')) {
-        return Utils.toast('A nova data precisa ser maior que a data do pagamento', 'error');
+      if (desiredNewDue && new Date(desiredNewDue + 'T12:00:00') <= new Date(previousDueDate + 'T12:00:00')) {
+        return Utils.toast('O próximo vencimento precisa ser posterior ao vencimento anterior', 'error');
       }
 
       const paymentCycleReferenceDate = (!isInstallmentMode && paymentDate && previousDueDate && new Date(paymentDate + 'T12:00:00') <= new Date(previousDueDate + 'T12:00:00')) ? previousDueDate : paymentDate;
@@ -4296,8 +4319,8 @@ ${bizName}`;
           Utils.toast('Pagamento registrado. Ainda ficou juros ou multa real em aberto; o ciclo não foi renovado.', 'success');
         } else {
           const paymentBeforeDue = new Date(paymentDate + 'T12:00:00') <= new Date(previousDueDate + 'T12:00:00');
-          const baseDateForNextDue = paymentBeforeDue ? previousDueDate : paymentDate;
-          newDue = desiredNewDue || Finance.getAutomaticNextDueDate(loanForDue, baseDateForNextDue);
+          const baseDateForNextDue = previousDueDate;
+          newDue = desiredNewDue || Finance.getRenewedDueFromPrevious(loanForDue, baseDateForNextDue);
           const roundedPrincipal = mvRoundMoney(remainingPrincipalAfterPayment);
           patch = {
             ...patch,
@@ -4306,7 +4329,7 @@ ${bizName}`;
             principal: roundedPrincipal,
             interest: 0,
             installment_amount: roundedPrincipal,
-            interest_start_date: paymentCycleReferenceDate,
+            interest_start_date: paymentDate,
             paid_principal: 0,
             paid_period_interest: 0,
             paid_extra_interest: 0,
@@ -4804,8 +4827,8 @@ ${bizName}`;
           Utils.toast('Pagamento registrado. Ainda ficou juros ou multa real em aberto; o ciclo não foi renovado.', 'success');
         } else {
           const paymentBeforeDue = new Date(paymentDate + 'T12:00:00') <= new Date(previousDueDate + 'T12:00:00');
-          const baseDateForNextDue = paymentBeforeDue ? previousDueDate : paymentDate;
-          newDue = nextDueDate || Finance.getAutomaticNextDueDate(loanForDue, baseDateForNextDue);
+          const baseDateForNextDue = previousDueDate;
+          newDue = nextDueDate || Finance.getRenewedDueFromPrevious(loanForDue, baseDateForNextDue);
           const roundedPrincipal = mvRoundMoney(remainingPrincipalAfterPayment);
           patch = {
             ...patch,
@@ -4814,7 +4837,7 @@ ${bizName}`;
             principal: roundedPrincipal,
             interest: 0,
             installment_amount: roundedPrincipal,
-            interest_start_date: paymentCycleReferenceDate,
+            interest_start_date: paymentDate,
             paid_principal: 0,
             paid_period_interest: 0,
             paid_extra_interest: 0,
@@ -4825,7 +4848,7 @@ ${bizName}`;
             last_payment_date: '',
             status_inst: 'pendente'
           };
-          Utils.toast('Ciclo renovado pela data real do pagamento.', 'success');
+          Utils.toast('Ciclo renovado com vencimento ancorado na data anterior.', 'success');
         }
       }
 
@@ -4899,7 +4922,7 @@ ${bizName}`;
           <div id="pay-next-wrap">
             <label class="text-xs text-slate-400">Próximo vencimento / data futura após este pagamento</label>
             <input type="date" class="input-field mb-3" id="pay-next-due">
-            <p class="text-[11px] text-slate-500 -mt-2 mb-3">Opcional. Preencha se quiser controlar manualmente a data futura. Se deixar vazio, o sistema calcula pelo prazo do contrato.</p>
+            <p class="text-[11px] text-slate-500 -mt-2 mb-3">Opcional. Preencha se quiser controlar manualmente a data futura. Se deixar vazio, o sistema mantém o vencimento ancorado no ciclo anterior.</p>
           </div>
           <div class="card p-3 mb-3 border-yellow-400/20 bg-yellow-400/5">
             <h4 class="text-sm font-semibold text-yellow-200 mb-2">Pagamento [Juros]</h4>
@@ -5309,8 +5332,8 @@ ${bizName}`;
         const multaEmAberto = Number(detAfter.accumulatedPenalty || 0) > 0.009;
         if (jurosQuitados && !multaEmAberto) {
           const paymentBeforeDue = new Date(paymentDate + 'T12:00:00') <= new Date(previousDueDate + 'T12:00:00');
-          const baseDateForNextDue = paymentBeforeDue ? previousDueDate : paymentDate;
-          newDue = nextDueDate || Finance.getAutomaticNextDueDate(loanForDue, baseDateForNextDue);
+          const baseDateForNextDue = previousDueDate;
+          newDue = nextDueDate || Finance.getRenewedDueFromPrevious(loanForDue, baseDateForNextDue);
           patch = {
             ...patch,
             original_principal_before_recalc: Number(inst.original_principal_before_recalc ?? inst.principal ?? 0),
@@ -5318,7 +5341,7 @@ ${bizName}`;
             principal: remainingPrincipalAfterPayment,
             interest: 0,
             installment_amount: remainingPrincipalAfterPayment,
-            interest_start_date: paymentCycleReferenceDate,
+            interest_start_date: paymentDate,
             paid_principal: 0,
             paid_period_interest: 0,
             paid_extra_interest: 0,
@@ -6442,6 +6465,104 @@ ${bizName}`;
       if(mode==='antecipacao_parcelas'&&mv25Fixed(mv25Loan(mv25Source())))return mv25OpenAnticipation();
       if(mode==='avulso'&&mv25Fixed(mv25Loan(mv25Source())))return mv25OpenAvulso();
       return mv25PaymentModeBase(mode);
+    };
+
+
+    /* V25.2 — pagamento dos juros do ciclo vencido, com renovação opcional.
+       Juros dos dias após o vencimento permanecem no novo ciclo quando
+       a data-base escolhida é o vencimento anterior. */
+    function mv252InterestAtDue(inst, loan) {
+      const due = inst.due_date;
+      const d = Finance.calcInstallmentDetails(inst, due);
+      return mvRoundMoney(d.totalInterestPending || 0);
+    }
+    function mv252SetInterestMode() {
+      const inst = activeModal?.instId ? DB.getInstallmentById(activeModal.instId) : activeModal?.inst;
+      if (!inst) return;
+      const loan = DB.getLoanByKey(inst.loan_id_inst);
+      if (!Finance.isProportionalLoan(loan)) return;
+      const type = document.getElementById('pay-type'); if(type) type.value='juros_ciclo_vencido';
+      const title = document.getElementById('pay-mode-title'); if(title) title.textContent='Juros do ciclo vencido — renovação opcional';
+      mvSetFieldValue('pay-interest-amount',mv252InterestAtDue({...inst,due_date:document.getElementById('pay-current-due')?.value||inst.due_date},loan));
+      mvSetFieldValue('pay-penalty-amount',0);mvSetFieldValue('pay-principal-amount',0);
+      const box=document.getElementById('mv252-renew');if(box)box.checked=true;
+      mvUpdatePaymentTotal();
+      mv252Preview();
+    }
+    function mv252Preview(){
+      const inst=activeModal?.instId?DB.getInstallmentById(activeModal.instId):activeModal?.inst;
+      const area=document.getElementById('mv252-preview');if(!area||!inst)return;
+      const loan=DB.getLoanByKey(inst.loan_id_inst);
+      const due=document.getElementById('pay-current-due')?.value||inst.due_date;
+      const date=document.getElementById('pay-date')?.value||Utils.today();
+      const working={...inst,due_date:due};
+      const dueInterest=mv252InterestAtDue(working,loan);
+      const paid=mvRoundMoney(Number(document.getElementById('pay-interest-amount')?.value||0));
+      const days=Finance.daysBetweenDates(due,date);
+      const daily=Number(loan?.daily_rate_used??Finance.getLateDailyRate(DB.getClientById(loan?.client_id)));
+      const overdue=mvRoundMoney(Math.max(0,Number(Finance.calcInstallmentDetails(working,date).principal||0)*daily/100*days));
+      const next=document.getElementById('pay-next-due')?.value||Finance.getRenewedDueFromPrevious(loan,due);
+      area.textContent='Juros exigidos até '+Utils.fmtDate(due)+': '+Utils.fmtMoney(dueInterest)+' | Informado: '+Utils.fmtMoney(paid)+' | '+days+' dia(s) posteriores: '+Utils.fmtMoney(overdue)+' permanecem como juros corridos | Próximo vencimento: '+Utils.fmtDate(next)+'.';
+    }
+    const mv252ShowBase=showPaymentModal;
+    showPaymentModal=function(){
+      mv252ShowBase();
+      const inst=activeModal?.instId?DB.getInstallmentById(activeModal.instId):activeModal?.inst;
+      const loan=inst?DB.getLoanByKey(inst.loan_id_inst):null;
+      if(!loan||!Finance.isProportionalLoan(loan))return;
+      const form=document.querySelector('#payment-modal form');if(!form)return;
+      const block=document.createElement('div');block.className='card p-3 mb-3 border-yellow-400/30 bg-yellow-400/5';
+      block.innerHTML='<p class="text-sm font-semibold text-yellow-200 mb-2">V25.2 · Renovação dos juros corridos</p><button type="button" class="btn-outline py-2 px-3 text-xs mb-3" onclick="mv252SetInterestMode()">Pagar somente juros dos 30 dias vencidos</button><label class="flex items-center gap-2 text-sm mb-2"><input type="checkbox" id="mv252-renew" checked> Renovar o ciclo após este pagamento</label><p class="text-xs text-slate-400 mb-2">O próximo vencimento pode ser escolhido no campo acima. Se deixar vazio, mantém o calendário a partir do vencimento anterior. Os dias após o vencimento permanecem como juros corridos.</p><p id="mv252-preview" class="text-xs text-yellow-200"></p>';
+      const target=document.getElementById('pay-next-wrap');
+      if(target)target.insertAdjacentElement('afterend',block);else form.insertBefore(block,form.firstChild);
+      ['pay-date','pay-current-due','pay-next-due','pay-interest-amount'].forEach(id=>document.getElementById(id)?.addEventListener('change',mv252Preview));
+      mv252Preview();
+    };
+    const mv252PaymentBase=Crud.processPayment;
+    Crud.processPayment=function(e){
+      if(document.getElementById('pay-type')?.value!=='juros_ciclo_vencido')return mv252PaymentBase(e);
+      e.preventDefault();
+      const instId=activeModal?.instId||activeModal?.inst?.id;
+      const inst=DB.getInstallmentById(instId);if(!inst)return Utils.toast('Parcela não encontrada.','error');
+      const loan=DB.getLoanByKey(inst.loan_id_inst);if(!Finance.isProportionalLoan(loan))return Utils.toast('Opção exclusiva de juros corridos.','error');
+      const date=document.getElementById('pay-date')?.value||Utils.today();
+      const due=document.getElementById('pay-current-due')?.value||inst.due_date;
+      const working={...inst,due_date:due};
+      const atDue=Finance.calcInstallmentDetails(working,due);
+      const today=Finance.calcInstallmentDetails(working,date);
+      const dueInterest=mvRoundMoney(atDue.totalInterestPending||0);
+      const entered=mvRoundMoney(Number(document.getElementById('pay-interest-amount')?.value||0));
+      const penaltyEnabled=!!document.getElementById('pay-discount-enabled')?.checked;
+      const pct=penaltyEnabled?Math.max(0,Math.min(100,Number(document.getElementById('pay-penalty-discount-percent')?.value||0))):0;
+      const discount=mvRoundMoney(Math.min(today.accumulatedPenalty||0,(today.accumulatedPenalty||0)*pct/100));
+      const penaltyPaid=mvRoundMoney(Number(document.getElementById('pay-penalty-amount')?.value||0));
+      const penaltyOpen=mvRoundMoney(Math.max(0,(today.accumulatedPenalty||0)-discount-penaltyPaid));
+      const renew=!!document.getElementById('mv252-renew')?.checked;
+      if(entered<=0)return Utils.toast('Informe o valor recebido em juros.','error');
+      if(entered>today.totalInterestPending+0.01)return Utils.toast('Juros recebidos excedem os juros em aberto.','error');
+      if(penaltyPaid>today.accumulatedPenalty-discount+0.01)return Utils.toast('Multa recebida excede a multa restante.','error');
+      if(renew&&entered+0.009<dueInterest)return Utils.toast('Para renovar, quite os juros acumulados até o vencimento anterior: '+Utils.fmtMoney(dueInterest),'error');
+      if(renew&&penaltyOpen>0.009)return Utils.toast('Para renovar, quite ou desconte a multa restante: '+Utils.fmtMoney(penaltyOpen),'error');
+      const requested=document.getElementById('pay-next-due')?.value||'';
+      const next=requested||Finance.getRenewedDueFromPrevious(loan,due);
+      if(renew&&next<=due)return Utils.toast('O próximo vencimento deve ser posterior ao vencimento anterior.','error');
+      const rate=Number(loan?.daily_rate_used??Finance.getLateDailyRate(DB.getClientById(loan.client_id)));
+      const principal=mvRoundMoney(today.principal||0);
+      const afterDueDays=Finance.daysBetweenDates(due,date);
+      const afterDueInterest=mvRoundMoney(principal*rate/100*afterDueDays);
+      const historicalInterest=mvRoundMoney(Finance.getPaidTotal(inst,'periodInterest')+entered);
+      const historicalPenalty=mvRoundMoney(Finance.getPaidTotal(inst,'penalty')+penaltyPaid);
+      const patch={due_date:renew?next:due,paid_period_interest:renew?mvRoundMoney(Math.max(0,entered-dueInterest)):mvRoundMoney(Number(inst.paid_period_interest||0)+entered),total_paid_period_interest:historicalInterest,paid_penalty:renew?0:mvRoundMoney(Number(inst.paid_penalty||0)+penaltyPaid),total_paid_penalty:historicalPenalty,total_penalty_discount:mvRoundMoney(Number(inst.total_penalty_discount||0)+discount),status_inst:'pendente',last_payment_date:renew?'':date};
+      if(renew){
+        patch.interest_start_date=due;
+        // O novo ciclo parte do vencimento anterior: os dias já transcorridos NÃO são perdoados.
+        patch.principal=principal;patch.interest=0;patch.installment_amount=principal;
+        patch.paid_extra_interest=0;patch.paid_principal=0;
+        patch.start_balance=principal;patch.end_balance=0;
+      }
+      DB.addPayment({id:Utils.uid(),type:'payment',payment_id:Utils.uid(),installment_id_pay:inst.id,loan_id_pay:inst.loan_id_inst,payment_amount:mvRoundMoney(entered+penaltyPaid),payment_date:date,payment_type:'juros_ciclo_vencido',payment_split_version:252,previous_due_date:due,new_due_date:renew?next:'',paid_to_period_interest:entered,paid_to_extra_interest:0,paid_to_penalty:penaltyPaid,paid_to_principal:0,penalty_discount_percent:pct,penalty_discount_value:discount,renew_cycle:renew,renew_interest_start_date:renew?due:'',overdue_interest_carried:renew?mvRoundMoney(Math.max(0,afterDueInterest-Math.max(0,entered-dueInterest))):0,observacao:renew?'Renovação opcional ancorada no vencimento anterior; juros dos dias posteriores permanecem em aberto.':'Pagamento de juros sem renovação.'});
+      DB.updateInstallment(inst.id,patch);
+      activeModal=null;Utils.toast(renew?'Ciclo renovado para '+Utils.fmtDate(next)+'. Juros dos '+afterDueDays+' dias posteriores mantidos: '+Utils.fmtMoney(afterDueInterest):'Pagamento registrado sem renovar o ciclo.','success');render();
     };
 
 </script>
